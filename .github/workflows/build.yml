@@ -1,0 +1,21 @@
+name: Build Nashama
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pynput pygame pyinstaller pillow
+      - run: python make_icon.py
+      - run: pyinstaller --onefile --noconsole --uac-admin --icon nashama.ico --name Nashama nashama.py
+      - run: choco install innosetup -y --no-progress
+      - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Nashama_Setup
+          path: output/Nashama_Setup.exe
