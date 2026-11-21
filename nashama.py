@@ -15,10 +15,26 @@ CHATTER = 0.04
 NOWIN = 0x08000000 if os.name == "nt" else 0
 CFG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Nashama")
 CFG = os.path.join(CFG_DIR, "config.json")
+import faulthandler, traceback
+try:
+    os.makedirs(CFG_DIR, exist_ok=True)
+    LOG = open(os.path.join(CFG_DIR, "crash.log"), "a", buffering=1, encoding="utf-8")
+    faulthandler.enable(file=LOG)
+except Exception:
+    LOG = open(os.devnull, "w")
+
+
+def _hook(t, v, tb):
+    traceback.print_exception(t, v, tb, file=LOG)
+
+
+sys.excepthook = _hook
+threading.excepthook = lambda a: _hook(a.exc_type, a.exc_value, a.exc_traceback)
 DEF = {"accent": "#f5b301", "kb_color": "#f5b301", "kb_press": "#ffffff", "ms_color": "#f5b301",
        "effect": "Static", "alpha": 1.0, "topmost": False, "padmap": {}, "padturbo": {}, "turbo_cps": 15, "pad_color": "White"}
 ACC = {"c": "#f5b301"}
-PRESETS = {"Gold": "#f5b301", "Cyan": "#22d3ee", "Magenta": "#e040fb", "Lime": "#7cfc00", "Red": "#ff3b3b", "White": "#ffffff"}
+PRESETS = {"ذهبي": "#f5b301", "سماوي": "#22d3ee", "وردي": "#e040fb", "أخضر": "#7cfc00", "أحمر": "#ff3b3b", "أبيض": "#ffffff"}
+EFF = {"ثابت": "Static", "قوس قزح": "Rainbow", "تنفس": "Breathing"}
 
 
 def load_cfg():
@@ -49,14 +65,14 @@ def blend(a, b, t):
 
 
 def hsv(h):
-    r, g, b = colorsys.hsv_to_rgb(h % 1, 0.9, 1)
+    r, g, b = colorsys.hsv_to_rgb(round((h % 1) * 48) / 48, 0.9, 1)
     return "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
 
 
 def ps(cmd):
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True, text=True,
-                           creationflags=NOWIN, timeout=25)
+                           creationflags=NOWIN, timeout=15)
         return r.stdout.strip()
     except Exception:
         return ""
@@ -84,8 +100,9 @@ kbc, msc = kb.Controller(), ms.Controller()
 
 
 def parse_target(s):
-    s = (s or "").strip().lower().replace(" click", "")
-    if s in ("", "(none)", "none"):
+    s = (s or "").strip().lower()
+    s = {"كليك يسار": "left", "كليك يمين": "right", "كليك وسط": "middle"}.get(s, s).replace(" click", "")
+    if s in ("", "(none)", "none", "بدون"):
         return None
     btn = {"left": ms.Button.left, "right": ms.Button.right, "middle": ms.Button.middle}
     if s in btn:
@@ -131,8 +148,18 @@ class Macro:
             time.sleep(max(0.0, 1 / max(self.cps, 0.1) - (time.perf_counter() - t0)))
 
 
+VK = {**{0x41 + i: chr(65 + i) for i in range(26)}, **{0x30 + i: str(i) for i in range(10)},
+      0xBA: ";", 0xBB: "=", 0xBC: ",", 0xBD: "-", 0xBE: ".", 0xBF: "/", 0xC0: "`", 0xDB: "[", 0xDC: "\\", 0xDD: "]", 0xDE: "'"}
+
+
 def kname(k):
-    n = k.char.upper() if isinstance(k, kb.KeyCode) and k.char else str(k).replace("Key.", "").upper()
+    if isinstance(k, kb.KeyCode):
+        vk = getattr(k, "vk", None)
+        if vk in VK:
+            return VK[vk]
+        n = k.char.upper() if k.char else "VK%s" % vk
+    else:
+        n = str(k).replace("Key.", "").upper()
     for b in ("SHIFT", "CTRL", "ALT"):
         if n == b or n.startswith(b + "_"):
             return b
@@ -193,7 +220,7 @@ class KeyboardView(tk.Canvas):
     def __init__(self, parent, app, U=36):
         W, H = 18.4 * U, 6.75 * U
         super().__init__(parent, width=int(W), height=int(H), bg=BG, highlightthickness=0)
-        self.app, self.keys, self.W = app, {}, W
+        self.app, self.keys, self.W, self.last = app, {}, W, {}
         rrect(self, 1, 1, W - 1, H - 1, 16, fill="#090c10", outline=PN2, width=2)
         y = 0.3
         for r, row in enumerate(ROWS):
@@ -218,11 +245,15 @@ class KeyboardView(tk.Canvas):
         return c["kb_color"]
 
     def update_colors(self):
-        t, pc = time.time(), self.app.cfg["kb_press"]
+        t, pc, now = time.time(), self.app.cfg["kb_press"], time.perf_counter()
         for name, items in self.keys.items():
-            down = name in self.app.kdown
+            down = name in self.app.kdown or now - self.app.klast_up.get(name, -9) < 0.12
             for rid, tid, xr in items:
                 c = self.col(xr, t)
+                st = (down, c, pc)
+                if self.last.get(rid) == st:
+                    continue
+                self.last[rid] = st
                 self.itemconfig(rid, fill=pc if down else PN, outline=pc if down else c)
                 self.itemconfig(tid, fill="#000000" if down else c)
 
@@ -246,6 +277,10 @@ class MouseView(tk.Canvas):
     def update_colors(self):
         c, pc, d = self.app.cfg["ms_color"], self.app.cfg["kb_press"], self.app.mdown
         wheel = time.time() - self.app.wheel_t < 0.15
+        st = (c, pc, tuple(sorted(d)), wheel)
+        if st == getattr(self, "_st", None):
+            return
+        self._st = st
         self.itemconfig(self.body, outline=c)
         for item, on in ((self.L, "left" in d), (self.R, "right" in d), (self.M, "middle" in d or wheel),
                          (self.X1, "x1" in d), (self.X2, "x2" in d)):
@@ -321,8 +356,8 @@ class PadView(tk.Canvas):
         self.coords(self.rd, rx0 - 9 + rx * 14, ry0 - 9 + ry * 14, rx0 + 9 + rx * 14, ry0 + 9 + ry * 14)
 
 
-ACTIONS = (["(none)"] + list("abcdefghijklmnopqrstuvwxyz0123456789") + ["space", "enter", "shift", "ctrl", "alt", "tab", "esc", "up", "down", "left", "right"]
-           + ["f%d" % i for i in range(1, 13)] + ["left click", "right click", "middle click"])
+ACTIONS = (["بدون"] + list("abcdefghijklmnopqrstuvwxyz0123456789") + ["space", "enter", "shift", "ctrl", "alt", "tab", "esc", "up", "down", "left", "right"]
+           + ["f%d" % i for i in range(1, 13)] + ["كليك يسار", "كليك يمين", "كليك وسط"])
 PADROWS = ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "BACK", "START", "L3", "R3", "UP", "DOWN", "LEFT", "RIGHT"]
 
 
@@ -330,7 +365,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.cfg = load_cfg()
-        self.title("NASHAMA"); self.geometry("720x720"); self.configure(bg=BG); self.minsize(700, 700)
+        self.title("النشاما"); self.geometry("720x720"); self.configure(bg=BG); self.minsize(700, 700)
         self.q = queue.Queue(); self.dev_names = ([], []); self.pads = {}; self.wins = {}
         self.kstat, self.mstat, self.pstat = {}, {}, {}
         self.kdown, self.klast_up, self.mlast = {}, {}, {}
@@ -342,7 +377,7 @@ class App(tk.Tk):
         self.prow = {}
         self.sty(); self.build()
         self.attributes("-topmost", self.cfg["topmost"]); self.attributes("-alpha", self.cfg["alpha"])
-        pygame.init(); pygame.joystick.init()
+        pygame.display.init(); pygame.joystick.init()
         for i in range(pygame.joystick.get_count()):
             j = pygame.joystick.Joystick(i); self.pads[j.get_instance_id()] = j
         kb.Listener(on_press=lambda k: self.q.put(("kd", kname(k), time.perf_counter())),
@@ -352,7 +387,7 @@ class App(tk.Tk):
                     on_scroll=lambda x, y, dx, dy: self.q.put(("wh",)), daemon=True).start()
         self.refresh_devices()
         self.after(30, self.loop); self.after(16, self.pad_loop); self.after(250, self.mouse_calc)
-        self.after(50, self.anim); self.after(200, self.tick_info); self.after(3000, self.auto_refresh)
+        self.after(50, self.anim); self.after(200, self.tick_info); self.after(10000, self.auto_refresh)
 
     def sty(self):
         a = self.cfg["accent"]; ACC["c"] = a; s = ttk.Style(self); s.theme_use("clam")
@@ -382,13 +417,13 @@ class App(tk.Tk):
         self.logo = lg.create_polygon(26, 2, 48, 9, 48, 28, 26, 50, 4, 28, 4, 9, fill=a)
         lg.create_text(26, 27, text="N", font=("Segoe UI", 20, "bold"), fill="#000")
         tf = tk.Frame(hd, bg=BG); tf.pack(side="left", padx=10)
-        self.title_l = tk.Label(tf, text="NASHAMA", bg=BG, fg=a, font=("Segoe UI", 24, "bold")); self.title_l.pack(anchor="w")
-        self.lbl(tf, "Input Devices Toolkit", fg=DM).pack(anchor="w")
-        self.lbl(hd, "ADMIN" if is_admin() else "Not admin (device control needs Admin)", fg=OK if is_admin() else DM,
+        self.title_l = tk.Label(tf, text="النشاما", bg=BG, fg=a, font=("Segoe UI", 24, "bold")); self.title_l.pack(anchor="w")
+        self.lbl(tf, "فحص وتحكم بالكيبورد والماوس واليد", fg=DM).pack(anchor="w")
+        self.lbl(hd, "مدير" if is_admin() else "مو مدير (التحكم بالأجهزة يحتاج صلاحية المدير)", fg=OK if is_admin() else DM,
                  font=("Segoe UI", 9, "bold")).pack(side="right")
         bar = tk.Frame(self, bg=BG); bar.pack(pady=12)
-        for txt, fn in (("Keyboard Lab", self.w_kb), ("Mouse Lab", self.w_ms), ("Gamepad", self.w_pad),
-                        ("Macros", self.w_mac), ("Devices", self.w_dev), ("Style", self.w_style)):
+        for txt, fn in (("فحص الكيبورد", self.w_kb), ("فحص الماوس", self.w_ms), ("اليد", self.w_pad),
+                        ("الماكرو", self.w_mac), ("الأجهزة", self.w_dev), ("المظهر", self.w_style)):
             RBtn(bar, text=txt, command=fn).pack(side="left", padx=4)
         card = tk.Frame(self, bg=PN2); card.pack(padx=16, pady=6)
         self.kv = KeyboardView(card, self); self.kv.pack(padx=1, pady=1)
@@ -398,7 +433,7 @@ class App(tk.Tk):
         rt = tk.Frame(bt, bg=BG); rt.pack(side="left", fill="both", expand=True, padx=16)
         g = tk.Frame(rt, bg=BG); g.pack(fill="x")
         self.tiles = {}
-        for i, (k, cap) in enumerate((("hz", "POLLING RATE"), ("sp", "MOUSE SPEED"), ("cps", "CLICKS / SEC"), ("kps", "KEYS / SEC"))):
+        for i, (k, cap) in enumerate((("hz", "معدل الاستجابة"), ("sp", "سرعة الماوس"), ("cps", "كليك بالثانية"), ("kps", "ضغطة بالثانية"))):
             t = Tile(g, cap); t.grid(row=i // 2, column=i % 2, sticky="nsew", padx=4, pady=4); self.tiles[k] = t
         g.columnconfigure((0, 1), weight=1)
         self.info = tk.Label(rt, text="", bg=BG, fg=DM, justify="left", anchor="nw", font=("Segoe UI", 10), wraplength=400)
@@ -418,28 +453,28 @@ class App(tk.Tk):
         builder(w)
 
     # ---------- keyboard / mouse labs ----------
-    def w_kb(self): self.open_win("kb", "NASHAMA - Keyboard Lab", "640x440", self.b_kb)
+    def w_kb(self): self.open_win("kb", "النشاما - فحص الكيبورد", "640x440", self.b_kb)
 
     def b_kb(self, w):
-        self.klab = self.lbl(w, "Press any key...", fg=self.cfg["accent"], font=("Segoe UI", 20, "bold")); self.klab.pack(pady=8)
-        self.kt = self.tree(w, ("Key", "Presses", "Avg hold ms", "Bounces", "Status"), (120, 100, 130, 100, 130), 12)
+        self.klab = self.lbl(w, "اضغط أي زر...", fg=self.cfg["accent"], font=("Segoe UI", 20, "bold")); self.klab.pack(pady=8)
+        self.kt = self.tree(w, ("الزر", "الضغطات", "متوسط الضغط ms", "تكرار خاطئ", "الحالة"), (120, 100, 130, 100, 130), 12)
         self.kt.pack(fill="both", expand=True, padx=8, pady=6)
-        RBtn(w, text="Reset stats", command=lambda: (self.kstat.clear(), self.kt.delete(*self.kt.get_children()))).pack(pady=6)
+        RBtn(w, text="تصفير الإحصائيات", command=lambda: (self.kstat.clear(), self.kt.delete(*self.kt.get_children()))).pack(pady=6)
         for n in self.kstat: self.draw_k(n)
 
-    def w_ms(self): self.open_win("ms", "NASHAMA - Mouse Lab", "560x400", self.b_ms)
+    def w_ms(self): self.open_win("ms", "النشاما - فحص الماوس", "560x400", self.b_ms)
 
     def b_ms(self, w):
-        self.mlab = self.lbl(w, "Move the mouse...", fg=self.cfg["accent"], font=("Segoe UI", 15, "bold")); self.mlab.pack(pady=8)
-        self.mt = self.tree(w, ("Button", "Clicks", "Bounces", "Status"), (130, 110, 110, 130), 8)
+        self.mlab = self.lbl(w, "حرّك الماوس...", fg=self.cfg["accent"], font=("Segoe UI", 15, "bold")); self.mlab.pack(pady=8)
+        self.mt = self.tree(w, ("الزر", "الضغطات", "تكرار خاطئ", "الحالة"), (130, 110, 110, 130), 8)
         self.mt.pack(fill="both", expand=True, padx=8, pady=6)
-        RBtn(w, text="Reset stats", command=self.reset_mouse).pack(pady=6)
+        RBtn(w, text="تصفير الإحصائيات", command=self.reset_mouse).pack(pady=6)
         for n in self.mstat: self.draw_m(n)
 
     def verdict(self, n, ch, avg=None):
         if ch >= 1 or (avg is not None and n >= 5 and avg < 15):
-            return "Weak", "bad"
-        return "OK", "ok"
+            return "ضعيف ⚠", "bad"
+        return "سليم ✔", "ok"
 
     def draw_k(self, n):
         if not alive(self.kt): return
@@ -475,25 +510,25 @@ class App(tk.Tk):
         save_cfg(self.cfg)
         if alive(self.pv): self.pv.draw()
 
-    def w_pad(self): self.open_win("pad", "NASHAMA - Gamepad", "960x600", self.b_pad)
+    def w_pad(self): self.open_win("pad", "النشاما - اليد", "960x600", self.b_pad)
 
     def b_pad(self, w):
         L = tk.Frame(w, bg=BG); L.pack(side="left", padx=10, pady=10)
         self.plab = self.lbl(L, "", fg=self.cfg["accent"], font=("Segoe UI", 13, "bold")); self.plab.pack(pady=4)
         self.pv = PadView(L, self); self.pv.pack()
-        RBtn(L, text="Switch controller color: White / Black", command=self.toggle_pad_color).pack(pady=4)
-        self.lbl(L, "Drawing: Xbox / PlayStation / Switch.\nMapping below works with any pad.", fg=DM).pack(pady=6)
+        RBtn(L, text="تغيير لون اليد: أبيض / أسود", command=self.toggle_pad_color).pack(pady=4)
+        self.lbl(L, "الرسم: إكس بوكس / بلايستيشن / سويتش.\nجدول الأزرار يشتغل مع أي يد.", fg=DM).pack(pady=6)
         f = tk.Frame(L, bg=BG); f.pack(pady=4)
-        self.lbl(f, "Turbo clicks/sec").pack(side="left")
+        self.lbl(f, "تيربو: ضغطة بالثانية").pack(side="left")
         self.tcps = tk.StringVar(value=str(self.cfg["turbo_cps"]))
         ttk.Entry(f, textvariable=self.tcps, width=6).pack(side="left", padx=6)
         R = tk.Frame(w, bg=BG); R.pack(side="left", fill="both", expand=True, padx=6, pady=10)
-        for c, t in enumerate(("Button", "Action", "Turbo", "Presses", "Status")):
+        for c, t in enumerate(("الزر", "الإجراء", "تيربو", "الضغطات", "الحالة")):
             tk.Label(R, text=t, bg=PN2, fg=self.cfg["accent"], font=("Segoe UI", 10, "bold")).grid(row=0, column=c, sticky="ew", padx=1, pady=1)
         self.prow = {}
         for r, n in enumerate(PADROWS, 1):
             self.lbl(R, n).grid(row=r, column=0, pady=2)
-            v = tk.StringVar(value=self.cfg["padmap"].get(n, "(none)"))
+            v = tk.StringVar(value=self.cfg["padmap"].get(n, "بدون"))
             v.trace_add("write", lambda *a, n=n, v=v: (self.cfg["padmap"].__setitem__(n, v.get()), save_cfg(self.cfg)))
             ttk.Combobox(R, textvariable=v, values=ACTIONS, width=12).grid(row=r, column=1, padx=4)
             tv = tk.BooleanVar(value=self.cfg["padturbo"].get(n, False))
@@ -508,8 +543,8 @@ class App(tk.Tk):
     def on_pad_change(self):
         if alive(getattr(self, "plab", None)):
             j = next(iter(self.pads.values()), None)
-            kind = {"PS": "PlayStation", "SW": "Nintendo Switch", "XB": "Xbox / Generic"}[self.pad_kind()]
-            self.plab.config(text=("%s  [%s]" % (j.get_name(), kind)) if j else "Connect a controller...")
+            kind = {"PS": "بلايستيشن", "SW": "نينتندو سويتش", "XB": "إكس بوكس / عامة"}[self.pad_kind()]
+            self.plab.config(text=("%s  [%s]" % (j.get_name(), kind)) if j else "وصّل اليد...")
 
     def draw_pad_row(self, n):
         if n in self.prow and alive(self.prow[n][0]):
@@ -537,6 +572,11 @@ class App(tk.Tk):
             press(t, down)
 
     def pad_loop(self):
+        try: self._pad_body()
+        except Exception: traceback.print_exc(file=LOG)
+        self.after(16, self.pad_loop)
+
+    def _pad_body(self):
         lay = self.pad_layout(); rev = {v: k for k, v in lay.items()}
         for e in pygame.event.get():
             if e.type == pygame.JOYDEVICEADDED:
@@ -563,20 +603,19 @@ class App(tk.Tk):
                 pass
         try: self.cfg["turbo_cps"] = float(self.tcps.get())
         except Exception: pass
-        self.after(16, self.pad_loop)
 
     # ---------- macros ----------
-    def w_mac(self): self.open_win("mac", "NASHAMA - Macros", "520x300", self.b_mac)
+    def w_mac(self): self.open_win("mac", "النشاما - الماكرو", "520x300", self.b_mac)
 
     def b_mac(self, w):
-        c = tk.LabelFrame(w, text="Keyboard / mouse macro", bg=BG, fg=self.cfg["accent"], font=("Segoe UI", 11, "bold"), padx=10, pady=8)
+        c = tk.LabelFrame(w, text="ماكرو الكيبورد / الماوس", bg=BG, fg=self.cfg["accent"], font=("Segoe UI", 11, "bold"), padx=10, pady=8)
         c.pack(fill="x", padx=12, pady=12)
-        for i, (l, v) in enumerate((("Key to repeat (f5 / a / left click)", self.m_t), ("Presses per second", self.m_c), ("Start/stop hotkey", self.m_h))):
+        for i, (l, v) in enumerate((("الزر المكرر (f5 / a / كليك يسار)", self.m_t), ("ضغطة بالثانية", self.m_c), ("زر التشغيل / الإيقاف", self.m_h))):
             self.lbl(c, l).grid(row=i, column=0, sticky="w", padx=6, pady=4)
             ttk.Entry(c, textvariable=v, width=14).grid(row=i, column=1, pady=4)
-        self.mstate = self.lbl(c, "Stopped", fg=BAD, font=("Segoe UI", 12, "bold")); self.mstate.grid(row=3, column=0, columnspan=2, pady=4)
-        RBtn(c, text="Apply / Start-Stop", command=self.mac_toggle).grid(row=4, column=0, columnspan=2, pady=4)
-        self.lbl(w, "Gamepad button macros: Gamepad window > Action + Turbo.\nSome online games block macros (anti-cheat). Use at your own risk.", fg=DM).pack(pady=8)
+        self.mstate = self.lbl(c, "متوقف", fg=BAD, font=("Segoe UI", 12, "bold")); self.mstate.grid(row=3, column=0, columnspan=2, pady=4)
+        RBtn(c, text="تطبيق / تشغيل-إيقاف", command=self.mac_toggle).grid(row=4, column=0, columnspan=2, pady=4)
+        self.lbl(w, "ماكرو أزرار اليد: من نافذة اليد اختر الإجراء وفعّل تيربو.\nبعض الألعاب الأونلاين تمنع الماكرو (Anti-Cheat). استخدمه على مسؤوليتك.", fg=DM).pack(pady=8)
 
     def mac_toggle(self):
         self.mac.target = self.m_t.get()
@@ -584,33 +623,40 @@ class App(tk.Tk):
         except ValueError: self.mac.cps = 10
         self.mac.stop() if self.mac.on else self.mac.start()
         if alive(self.mstate):
-            self.mstate.config(text="Running" if self.mac.on else "Stopped", fg=OK if self.mac.on else BAD)
+            self.mstate.config(text="يشتغل" if self.mac.on else "متوقف", fg=OK if self.mac.on else BAD)
 
     # ---------- devices ----------
-    def w_dev(self): self.open_win("dev", "NASHAMA - Devices", "720x420", self.b_dev)
+    def w_dev(self): self.open_win("dev", "النشاما - الأجهزة", "720x420", self.b_dev)
 
     def b_dev(self, w):
-        self.dt = self.tree(w, ("Type", "Name", "Status"), (150, 460, 80), 11); self.dt.pack(fill="both", expand=True, padx=8, pady=8)
+        self.dt = self.tree(w, ("النوع", "الاسم", "الحالة"), (150, 460, 80), 11); self.dt.pack(fill="both", expand=True, padx=8, pady=8)
         b = ttk.Frame(w); b.pack(pady=4)
-        for t, fn in (("Refresh", self.refresh_devices), ("Disable", lambda: self.dev_act("dis")), ("Enable", lambda: self.dev_act("en")), ("Reset", lambda: self.dev_act("rst"))):
+        for t, fn in (("تحديث", self.refresh_devices), ("تعطيل", lambda: self.dev_act("dis")), ("تفعيل", lambda: self.dev_act("en")), ("إعادة ضبط", lambda: self.dev_act("rst"))):
             RBtn(b, text=t, command=fn).pack(side="left", padx=5)
         self.dmsg = self.lbl(w, "", fg=DM); self.dmsg.pack()
         self.show_devs(getattr(self, "devs", []))
 
     def refresh_devices(self):
-        threading.Thread(target=lambda: self.q.put(("devs", list_devices())), daemon=True).start()
+        if getattr(self, "_devbusy", False):
+            return
+        self._devbusy = True
+
+        def w():
+            try: self.q.put(("devs", list_devices()))
+            finally: self._devbusy = False
+        threading.Thread(target=w, daemon=True).start()
 
     def auto_refresh(self):
-        self.refresh_devices(); self.after(3000, self.auto_refresh)
+        self.refresh_devices(); self.after(10000, self.auto_refresh)
 
     def show_devs(self, d):
         self.devs = d
-        k = [x["FriendlyName"] for x in d if x.get("Class") == "Keyboard" and x.get("FriendlyName")]
-        m = [x["FriendlyName"] for x in d if x.get("Class") == "Mouse" and x.get("FriendlyName")]
+        k = list(dict.fromkeys(x["FriendlyName"] for x in d if x.get("Class") == "Keyboard" and x.get("FriendlyName")))
+        m = list(dict.fromkeys(x["FriendlyName"] for x in d if x.get("Class") == "Mouse" and x.get("FriendlyName")))
         self.dev_names = (k, m)
         if alive(self.dt):
             sel = self.dt.selection(); self.dt.delete(*self.dt.get_children())
-            names = {"Keyboard": "Keyboard", "Mouse": "Mouse", "HIDClass": "HID / Gamepad", "XboxComposite": "Xbox Controller"}
+            names = {"Keyboard": "كيبورد", "Mouse": "ماوس", "HIDClass": "جهاز HID / يد", "XboxComposite": "يد Xbox"}
             for x in d:
                 self.dt.insert("", "end", iid=x["InstanceId"], values=(names.get(x["Class"], x["Class"]), x["FriendlyName"], x["Status"]))
             for s in sel:
@@ -618,41 +664,41 @@ class App(tk.Tk):
 
     def dev_act(self, a):
         sel = self.dt.selection() if alive(self.dt) else ()
-        if not sel: return messagebox.showinfo("NASHAMA", "Select a device first")
+        if not sel: return messagebox.showinfo("النشاما", "اختر جهاز من القائمة أولاً")
         iid = sel[0].replace("'", "''")
         cmd = {"dis": "Disable-PnpDevice -InstanceId '%s' -Confirm:$false" % iid, "en": "Enable-PnpDevice -InstanceId '%s' -Confirm:$false" % iid,
                "rst": "Disable-PnpDevice -InstanceId '%s' -Confirm:$false; Start-Sleep 1; Enable-PnpDevice -InstanceId '%s' -Confirm:$false" % (iid, iid)}[a]
         def w():
-            ps(cmd); self.q.put(("msg", "Command sent (needs Admin)")); self.refresh_devices()
+            ps(cmd); self.q.put(("msg", "تم إرسال الأمر (يحتاج صلاحية المدير)")); self.refresh_devices()
         threading.Thread(target=w, daemon=True).start()
 
     # ---------- style ----------
-    def w_style(self): self.open_win("style", "NASHAMA - Style", "520x470", self.b_style)
+    def w_style(self): self.open_win("style", "النشاما - المظهر", "520x470", self.b_style)
 
     def pick(self, key):
         c = colorchooser.askcolor(color=self.cfg[key], parent=self.wins.get("style"))[1]
         if c: self.cfg[key] = c; self.apply_theme()
 
     def b_style(self, w):
-        self.lbl(w, "Colors", fg=self.cfg["accent"], font=("Segoe UI", 14, "bold")).pack(pady=(14, 4))
-        for t, k in (("Keyboard color", "kb_color"), ("Pressed key color", "kb_press"), ("Mouse + gamepad color", "ms_color"), ("App accent color", "accent")):
+        self.lbl(w, "الألوان", fg=self.cfg["accent"], font=("Segoe UI", 14, "bold")).pack(pady=(14, 4))
+        for t, k in (("لون الكيبورد", "kb_color"), ("لون الزر المضغوط", "kb_press"), ("لون الماوس واليد", "ms_color"), ("لون البرنامج", "accent")):
             RBtn(w, text=t, command=lambda k=k: self.pick(k)).pack(pady=3)
-        self.lbl(w, "Quick presets (keyboard + mouse)").pack(pady=(12, 4))
+        self.lbl(w, "ألوان جاهزة (كيبورد + ماوس)").pack(pady=(12, 4))
         pf = tk.Frame(w, bg=BG); pf.pack()
         for n, c in PRESETS.items():
             tk.Button(pf, text=n, bg=c, fg="#000", relief="flat", padx=8,
                       command=lambda c=c: (self.cfg.update(kb_color=c, ms_color=c), self.apply_theme())).pack(side="left", padx=3)
-        self.lbl(w, "Keyboard effect").pack(pady=(14, 4))
-        ev = tk.StringVar(value=self.cfg["effect"])
-        cb = ttk.Combobox(w, textvariable=ev, values=["Static", "Rainbow", "Breathing"], state="readonly", width=16); cb.pack()
-        cb.bind("<<ComboboxSelected>>", lambda e: (self.cfg.update(effect=ev.get()), save_cfg(self.cfg)))
-        self.lbl(w, "Window opacity").pack(pady=(14, 0))
+        self.lbl(w, "تأثير الكيبورد").pack(pady=(14, 4))
+        ev = tk.StringVar(value={v: k for k, v in EFF.items()}.get(self.cfg["effect"], "ثابت"))
+        cb = ttk.Combobox(w, textvariable=ev, values=list(EFF), state="readonly", width=16); cb.pack()
+        cb.bind("<<ComboboxSelected>>", lambda e: (self.cfg.update(effect=EFF.get(ev.get(), "Static")), save_cfg(self.cfg)))
+        self.lbl(w, "شفافية النافذة").pack(pady=(14, 0))
         sc = ttk.Scale(w, from_=0.4, to=1.0, value=self.cfg["alpha"], length=220,
                        command=lambda v: (self.cfg.update(alpha=float(v)), self.attributes("-alpha", float(v)), save_cfg(self.cfg)))
         sc.pack()
         tv = tk.BooleanVar(value=self.cfg["topmost"])
-        ttk.Checkbutton(w, text="Always on top", variable=tv, command=lambda: (self.cfg.update(topmost=tv.get()), self.apply_theme())).pack(pady=10)
-        RBtn(w, text="Reset all stats", command=self.reset_all).pack(pady=4)
+        ttk.Checkbutton(w, text="خلّي البرنامج فوق كل النوافذ", variable=tv, command=lambda: (self.cfg.update(topmost=tv.get()), self.apply_theme())).pack(pady=10)
+        RBtn(w, text="تصفير كل الإحصائيات", command=self.reset_all).pack(pady=4)
 
     def reset_all(self):
         self.kstat.clear(); self.pstat.clear(); self.reset_mouse()
@@ -675,7 +721,7 @@ class App(tk.Tk):
                         self.kdown[n] = ts; self.keyhits.append(ts)
                         st = self.kstat.setdefault(n, {"n": 0, "d": [], "ch": 0}); st["n"] += 1
                         if ts - self.klast_up.get(n, -1) < CHATTER: st["ch"] += 1
-                        if alive(self.klab): self.klab.config(text="Key: " + n)
+                        if alive(self.klab): self.klab.config(text="الزر: " + n)
                         self.draw_k(n)
                         if n == self.m_h.get().strip().upper(): self.mac_toggle()
                 elif t == "ku":
@@ -693,6 +739,8 @@ class App(tk.Tk):
                         self.mdown.discard(b)
         except queue.Empty:
             pass
+        except Exception:
+            traceback.print_exc(file=LOG)
         self.after(30, self.loop)
 
     def mouse_calc(self):
@@ -705,13 +753,19 @@ class App(tk.Tk):
         else:
             self.hz = self.sp = 0
         if alive(self.mlab):
-            self.mlab.config(text="Mouse: " + (" | ".join(self.dev_names[1]) or "unknown"))
+            self.mlab.config(text="الماوس: " + (" | ".join(self.dev_names[1]) or "غير معروف"))
         self.after(250, self.mouse_calc)
 
     def anim(self):
-        self.kv.update_colors(); self.mv.update_colors()
-        if alive(self.pv): self.pv.set_kind(self.pad_kind())
+        try:
+            self.kv.update_colors(); self.mv.update_colors()
+            if alive(self.pv): self.pv.set_kind(self.pad_kind())
+        except Exception:
+            traceback.print_exc(file=LOG)
         self.after(50, self.anim)
+
+    def report_callback_exception(self, exc, val, tb):
+        traceback.print_exception(exc, val, tb, file=LOG)
 
     def tick_info(self):
         now = time.perf_counter()
@@ -720,9 +774,9 @@ class App(tk.Tk):
         j = next(iter(self.pads.values()), None)
         self.tiles["hz"].set("%.0f Hz" % self.hz); self.tiles["sp"].set("%.0f px/s" % self.sp)
         self.tiles["cps"].set(str(len(self.clicks))); self.tiles["kps"].set(str(len(self.keyhits)))
-        self.info.config(text="Keyboard:  %s\nMouse:  %s\nGamepad:  %s\nMax polling:  %.0f Hz" % (
-            " | ".join(self.dev_names[0]) or "detecting...", " | ".join(self.dev_names[1]) or "detecting...",
-            j.get_name() if j else "not connected", self.maxhz))
+        self.info.config(text="الكيبورد:  %s\nالماوس:  %s\nاليد:  %s\nأعلى معدل استجابة:  %.0f Hz" % (
+            " | ".join(self.dev_names[0]) or "جاري البحث...", " | ".join(self.dev_names[1]) or "جاري البحث...",
+            j.get_name() if j else "غير متصلة", self.maxhz))
         self.after(200, self.tick_info)
 
 if __name__ == "__main__":
