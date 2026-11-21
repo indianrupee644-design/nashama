@@ -125,6 +125,7 @@ def press(t, down):
 
 
 MAX_CPS = 20000
+FAST_HOOK = {"cb": None}
 SPECIAL = {"space": 0x20, "enter": 0x0D, "shift": 0x10, "ctrl": 0x11, "alt": 0x12, "tab": 0x09, "esc": 0x1B,
            "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27, **{"f%d" % i: 0x6F + i for i in range(1, 13)}}
 if os.name == "nt":
@@ -188,10 +189,11 @@ class Macro:
     """Repeats a key / mouse click. Above 50/s it sends batches with SendInput (up to MAX_CPS per second)"""
     def __init__(self):
         self.on, self.target, self.cps, self.gen = False, "f5", 10.0, 0
+        self.sent, self.err, self.cap, self.tn = 0, 0, MAX_CPS, None
 
     def start(self):
         if not self.on:
-            self.on = True; self.gen += 1
+            self.on = True; self.gen += 1; self.err = 0; self.tn = tname(self.target)
             threading.Thread(target=self._run, args=(self.gen,), daemon=True).start()
 
     def stop(self):
@@ -201,7 +203,7 @@ class Macro:
         return self.on and g == self.gen
 
     def _cps(self):
-        return max(0.1, min(self.cps, MAX_CPS))
+        return max(0.1, min(self.cps, self.cap))
 
     def _run(self, g):
         try:
@@ -209,6 +211,7 @@ class Macro:
             if t is None:
                 self.on = False; return
             spec = fast_spec(t)
+            self.cap = MAX_CPS if (spec and spec[0] == "m") else 2000
             if spec and self._cps() > 50:
                 self._fast(spec, g)
             else:
@@ -223,11 +226,14 @@ class Macro:
                 msc.click(t)
             else:
                 kbc.press(t); kbc.release(t)
+            self.sent += 1
             time.sleep(max(0.0, 1 / self._cps() - (time.perf_counter() - t0)))
 
     def _fast(self, spec, g):
         w = ctypes.windll
         w.winmm.timeBeginPeriod(1)
+        hk = FAST_HOOK["cb"]
+        if hk and spec[0] == "m": hk("m", True)
         try:
             pair, sz = make_pair(spec), ctypes.sizeof(INPUT)
             acc, last = 0.0, time.perf_counter()
@@ -236,10 +242,13 @@ class Macro:
                 k = int(acc); acc -= k; k = min(k, 2000)
                 if k:
                     arr = (INPUT * (2 * k))(*(pair * k))
-                    w.user32.SendInput(2 * k, arr, sz)
+                    r = w.user32.SendInput(2 * k, arr, sz)
+                    if r: self.sent += r // 2
+                    else: self.err = w.kernel32.GetLastError()
                 time.sleep(0.001)
         finally:
             w.winmm.timeEndPeriod(1)
+            if hk and spec[0] == "m": hk("m", False)
 
 
 VK = {**{0x41 + i: chr(65 + i) for i in range(26)}, **{0x30 + i: str(i) for i in range(10)},
@@ -477,11 +486,8 @@ class App(tk.Tk):
         pygame.display.init(); pygame.joystick.init()
         for i in range(pygame.joystick.get_count()):
             j = pygame.joystick.Joystick(i); self.pads[j.get_instance_id()] = j
-        kb.Listener(on_press=lambda k: self._kq("kd", k),
-                    on_release=lambda k: self._kq("ku", k), daemon=True).start()
-        ms.Listener(on_move=lambda x, y: self.moves.append((time.perf_counter(), x, y)),
-                    on_click=lambda x, y, b, p: self._mq(b, p),
-                    on_scroll=lambda x, y, dx, dy: self.q.put(("wh",)), daemon=True).start()
+        self.fastcnt = {"m": 0, "k": 0}; FAST_HOOK["cb"] = self.on_fast
+        self.start_kl(); self.start_ml()
         self.refresh_devices()
         self.after(30, self.loop); self.after(16, self.pad_loop); self.after(250, self.mouse_calc)
         self.after(50, self.anim); self.after(200, self.tick_info); self.after(10000, self.auto_refresh)
@@ -624,6 +630,7 @@ class App(tk.Tk):
         self.lbl(L, "الرسم: إكس بوكس / بلايستيشن / سويتش.\nجدول الأزرار يشتغل مع أي يد.", fg=DM).pack(pady=6)
         self.lbl(L, "عادي = ضغطة عادية\nتيربو = يكرر طول ما أنت ضاغط الزر\nتشغيل/إيقاف = ضغطة وحدة تشغّل وضغطة ثانية توقف", fg=DM, justify="left").pack(pady=4)
         RBtn(L, text="إيقاف كل الماكرو", command=self.stop_all).pack(pady=6)
+        self.lastpad = self.lbl(L, "آخر حدث باليد: —", fg=DM); self.lastpad.pack()
         qf = tk.LabelFrame(L, text="ماكرو جديد (سريع)", bg=BG, fg=self.cfg["accent"], font=("Segoe UI", 11, "bold"), padx=8, pady=6)
         qf.pack(fill="x", pady=8)
         r1 = tk.Frame(qf, bg=BG); r1.pack(fill="x", pady=3)
@@ -674,6 +681,8 @@ class App(tk.Tk):
             else: self.prow[n][1].config(text=v, fg=OK if tag == "ok" else BAD)
 
     def pad_event(self, name, down):
+        if alive(getattr(self, "lastpad", None)):
+            self.lastpad.config(text="آخر حدث باليد: %s %s" % (name, "↓" if down else "↑"))
         if self.learn_pad and down:
             self.learn_pad = False; self.q_pad.set(name)
             if alive(getattr(self, "speedmsg", None)):
@@ -902,9 +911,28 @@ class App(tk.Tk):
             traceback.print_exc(file=LOG)
         self.after(50, self.anim)
 
+    def start_kl(self):
+        self.kl = kb.Listener(on_press=lambda k: self._kq("kd", k), on_release=lambda k: self._kq("ku", k), daemon=True)
+        self.kl.start()
+
+    def start_ml(self):
+        self.ml = ms.Listener(on_move=lambda x, y: self.moves.append((time.perf_counter(), x, y)),
+                              on_click=lambda x, y, b, p: self._mq(b, p),
+                              on_scroll=lambda x, y, dx, dy: self.q.put_nowait(("wh",)), daemon=True)
+        self.ml.start()
+
+    def on_fast(self, kind, start):
+        """Pause the mouse hook while a very fast mouse macro runs (it would flood the hook and jam the system)"""
+        c = self.fastcnt; c[kind] += 1 if start else -1
+        try:
+            if start and c[kind] == 1: self.ml.stop()
+            elif not start and c[kind] <= 0: c[kind] = 0; self.start_ml()
+        except Exception:
+            traceback.print_exc(file=LOG)
+
     def blocked(self, n):
         for m in [self.mac, *self.padmacros.values()]:
-            if m.on and tname(m.target) == n:
+            if m.on and m.tn == n:
                 return True
         return False
 
@@ -917,7 +945,7 @@ class App(tk.Tk):
 
     def _mq(self, b, p):
         n = str(b).replace("Button.", "")
-        if p and self.blocked(n):
+        if self.blocked(n):
             return
         try: self.q.put_nowait(("mc", n, time.perf_counter(), p))
         except queue.Full: pass
@@ -1006,6 +1034,14 @@ class App(tk.Tk):
         self.info.config(text="الكيبورد:  %s\nالماوس:  %s\nاليد:  %s\nأعلى معدل استجابة:  %.0f Hz" % (
             " | ".join(self.dev_names[0]) or "جاري البحث...", " | ".join(self.dev_names[1]) or "جاري البحث...",
             j.get_name() if j else "غير متصلة", self.maxhz))
+        for n, m in list(self.padmacros.items()):
+            if n in self.prow and alive(self.prow[n][1]):
+                if m.on:
+                    rate = (m.sent - getattr(m, "_ls", 0)) / max(now - getattr(m, "_lt", now - 0.2), 0.05)
+                    m._ls, m._lt = m.sent, now
+                    self.prow[n][1].config(text=("خطأ %d" % m.err) if m.err else ("▶ %d/ث" % rate), fg=BAD if m.err else self.cfg["accent"])
+                elif str(self.prow[n][1].cget("text")).startswith(("▶", "خطأ")) and n in self.pstat:
+                    self.draw_pad_row(n)
         self.after(200, self.tick_info)
 
 if __name__ == "__main__":
