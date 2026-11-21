@@ -470,6 +470,8 @@ class App(tk.Tk):
         self.m_t, self.m_c, self.m_h = tk.StringVar(value="f5"), tk.StringVar(value="10"), tk.StringVar(value="f6")
         self.kt = self.mt = self.pv = self.klab = self.mlab = self.dmsg = self.dt = self.mstate = self.pt = None
         self.prow, self.pvars, self.rlab, self.learn_row, self.learn_t, self.nrow = {}, {}, {}, None, 0, 1
+        self.learn_pad, self.mvars, self.svars = False, {}, {}
+        self.q_pad, self.q_act, self.q_mode, self.q_cps = tk.StringVar(value="—"), tk.StringVar(value="—"), tk.StringVar(value=MODES[1]), tk.StringVar(value="15")
         self.sty(); self.build()
         self.attributes("-topmost", self.cfg["topmost"]); self.attributes("-alpha", self.cfg["alpha"])
         pygame.display.init(); pygame.joystick.init()
@@ -622,9 +624,27 @@ class App(tk.Tk):
         self.lbl(L, "الرسم: إكس بوكس / بلايستيشن / سويتش.\nجدول الأزرار يشتغل مع أي يد.", fg=DM).pack(pady=6)
         self.lbl(L, "عادي = ضغطة عادية\nتيربو = يكرر طول ما أنت ضاغط الزر\nتشغيل/إيقاف = ضغطة وحدة تشغّل وضغطة ثانية توقف", fg=DM, justify="left").pack(pady=4)
         RBtn(L, text="إيقاف كل الماكرو", command=self.stop_all).pack(pady=6)
+        qf = tk.LabelFrame(L, text="ماكرو جديد (سريع)", bg=BG, fg=self.cfg["accent"], font=("Segoe UI", 11, "bold"), padx=8, pady=6)
+        qf.pack(fill="x", pady=8)
+        r1 = tk.Frame(qf, bg=BG); r1.pack(fill="x", pady=3)
+        self.lbl(r1, "1) زر اليد:").pack(side="left")
+        tk.Label(r1, textvariable=self.q_pad, bg=BG, fg=self.cfg["accent"], font=("Segoe UI", 11, "bold"), width=7).pack(side="left")
+        RBtn(r1, text="اضغط زر باليد", command=self.start_pad_learn, h=28, fs=9).pack(side="left")
+        r2 = tk.Frame(qf, bg=BG); r2.pack(fill="x", pady=3)
+        self.lbl(r2, "2) الإجراء:").pack(side="left")
+        tk.Label(r2, textvariable=self.q_act, bg=BG, fg=self.cfg["accent"], font=("Segoe UI", 11, "bold"), width=9).pack(side="left")
+        RBtn(r2, text="اضغط زر / كليك", command=lambda: self.start_learn("QUICK"), h=28, fs=9).pack(side="left")
+        r3 = tk.Frame(qf, bg=BG); r3.pack(fill="x", pady=3)
+        self.lbl(r3, "3) النمط:").pack(side="left")
+        ttk.Combobox(r3, textvariable=self.q_mode, values=MODES, state="readonly", width=24).pack(side="left", padx=4)
+        r4 = tk.Frame(qf, bg=BG); r4.pack(fill="x", pady=3)
+        self.lbl(r4, "4) السرعة / ث:").pack(side="left")
+        ttk.Entry(r4, textvariable=self.q_cps, width=9).pack(side="left", padx=4)
+        RBtn(r4, text="حفظ الماكرو", command=self.save_quick, h=28, fs=9).pack(side="left", padx=6)
         R = tk.Frame(w, bg=BG); R.pack(side="left", fill="both", expand=True, padx=6, pady=10)
         self.rowsf, self.nrow = R, 1
         self.prow, self.pvars, self.rlab = {}, {}, {}
+        self.mvars, self.svars = {}, {}; self.pvars["QUICK"] = self.q_act
         for c, t in enumerate(("الزر", "الإجراء", "النمط", "السرعة / ث", "الضغطات", "الحالة")):
             tk.Label(R, text=t, bg=PN2, fg=self.cfg["accent"], font=("Segoe UI", 10, "bold")).grid(row=0, column=c, sticky="ew", padx=1, pady=1)
         self.speedmsg = self.lbl(R, "", fg=BAD); self.speedmsg.grid(row=999, column=0, columnspan=6, pady=6)
@@ -654,6 +674,11 @@ class App(tk.Tk):
             else: self.prow[n][1].config(text=v, fg=OK if tag == "ok" else BAD)
 
     def pad_event(self, name, down):
+        if self.learn_pad and down:
+            self.learn_pad = False; self.q_pad.set(name)
+            if alive(getattr(self, "speedmsg", None)):
+                self.speedmsg.config(text="تم اختيار زر اليد: " + name, fg=OK)
+            return
         if name not in self.prow and alive(getattr(self, "rowsf", None)):
             self.add_row(name)
         lb = self.rlab.get(name)
@@ -912,16 +937,33 @@ class App(tk.Tk):
         af = tk.Frame(R, bg=BG); af.grid(row=r, column=1, padx=3)
         ttk.Combobox(af, textvariable=v, values=ACTIONS, width=11).pack(side="left")
         RBtn(af, text="تسجيل", command=lambda n=n: self.start_learn(n), h=26, fs=9).pack(side="left", padx=3)
-        mv = tk.StringVar(value=self.cfg["padmode"].get(n, MODES[0]))
+        mv = tk.StringVar(value=self.cfg["padmode"].get(n, MODES[0])); self.mvars[n] = mv
         mv.trace_add("write", lambda *a, n=n, mv=mv: (self.cfg["padmode"].__setitem__(n, mv.get()), save_cfg(self.cfg)))
         ttk.Combobox(R, textvariable=mv, values=MODES, state="readonly", width=24).grid(row=r, column=2, padx=3)
-        sv = tk.StringVar(value=str(self.cfg["padcps"].get(n, 15)))
+        sv = tk.StringVar(value=str(self.cfg["padcps"].get(n, 15))); self.svars[n] = sv
         sv.trace_add("write", lambda *a, n=n, sv=sv: self.set_cps(n, sv.get()))
         ttk.Entry(R, textvariable=sv, width=9).grid(row=r, column=3, padx=3)
         c1, c2 = self.lbl(R, "0"), self.lbl(R, "-", fg=DM)
         c1.grid(row=r, column=4); c2.grid(row=r, column=5, padx=8)
         self.prow[n] = (c1, c2); self.rlab[n] = lb
         if n in self.pstat: self.draw_pad_row(n)
+
+    def start_pad_learn(self):
+        self.learn_pad = True
+        if alive(getattr(self, "speedmsg", None)):
+            self.speedmsg.config(text="اضغط الحين الزر اللي تبيه في اليد", fg=self.cfg["accent"])
+
+    def save_quick(self):
+        p, a = self.q_pad.get(), self.q_act.get()
+        msg = None
+        if p == "—" or a == "—":
+            msg = "اختر زر اليد والإجراء أول"
+        else:
+            if p not in self.prow: self.add_row(p)
+            self.pvars[p].set(a); self.mvars[p].set(self.q_mode.get()); self.svars[p].set(self.q_cps.get())
+            msg = "تم حفظ الماكرو: زر اليد %s ← %s" % (p, a)
+        if alive(getattr(self, "speedmsg", None)):
+            self.speedmsg.config(text=msg, fg=OK)
 
     def start_learn(self, n):
         self.learn_row, self.learn_t = n, time.perf_counter()
@@ -940,7 +982,7 @@ class App(tk.Tk):
                 msg = "هذا الزر مو مدعوم، جرّب زر ثاني"
             else:
                 if n in self.pvars: self.pvars[n].set(tgt)
-                msg = "تم: زر اليد %s ← %s" % (n, tgt)
+                msg = ("تم: الإجراء ← %s" % tgt) if n == "QUICK" else ("تم: زر اليد %s ← %s" % (n, tgt))
         if alive(getattr(self, "speedmsg", None)):
             self.speedmsg.config(text=msg, fg=OK)
 
