@@ -6,6 +6,7 @@ os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 os.environ["SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS"] = "1"
 import tkinter as tk
 from tkinter import ttk, messagebox, colorchooser
+from tkinter import font as tkfont
 from pynput import keyboard as kb, mouse as ms
 import pygame
 
@@ -15,7 +16,8 @@ NOWIN = 0x08000000 if os.name == "nt" else 0
 CFG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Nashama")
 CFG = os.path.join(CFG_DIR, "config.json")
 DEF = {"accent": "#f5b301", "kb_color": "#f5b301", "kb_press": "#ffffff", "ms_color": "#f5b301",
-       "effect": "Static", "alpha": 1.0, "topmost": False, "padmap": {}, "padturbo": {}, "turbo_cps": 15}
+       "effect": "Static", "alpha": 1.0, "topmost": False, "padmap": {}, "padturbo": {}, "turbo_cps": 15, "pad_color": "White"}
+ACC = {"c": "#f5b301"}
 PRESETS = {"Gold": "#f5b301", "Cyan": "#22d3ee", "Magenta": "#e040fb", "Lime": "#7cfc00", "Red": "#ff3b3b", "White": "#ffffff"}
 
 
@@ -141,6 +143,41 @@ def kid(n):
     return "k" + n.encode("utf-8").hex()
 
 
+def rrect(c, x0, y0, x1, y1, r=8, **kw):
+    p = [x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0]
+    return c.create_polygon(p, smooth=True, **kw)
+
+
+class RBtn(tk.Canvas):
+    """Rounded flat button with hover effect"""
+    def __init__(self, parent, text="", command=None, bg=BG, **kw):
+        f = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+        w, h = f.measure(text) + 34, 36
+        super().__init__(parent, width=w, height=h, bg=bg, highlightthickness=0, cursor="hand2")
+        self.cmd, self.w, self.h = command, w, h
+        self.shape = rrect(self, 1, 1, w - 1, h - 1, 12, fill=ACC["c"], outline="")
+        self.create_text(w / 2, h / 2, text=text, fill="#000000", font=f)
+        self.bind("<Enter>", lambda e: self.itemconfig(self.shape, fill=blend(ACC["c"], "#ffffff", 0.72)))
+        self.bind("<Leave>", lambda e: self.itemconfig(self.shape, fill=ACC["c"]))
+        self.bind("<ButtonPress-1>", lambda e: self.itemconfig(self.shape, fill=blend(ACC["c"], "#000000", 0.8)))
+        self.bind("<ButtonRelease-1>", self._rel)
+
+    def _rel(self, e):
+        self.itemconfig(self.shape, fill=ACC["c"])
+        if 0 <= e.x <= self.w and 0 <= e.y <= self.h and self.cmd:
+            self.cmd()
+
+
+class Tile(tk.Frame):
+    def __init__(self, parent, cap):
+        super().__init__(parent, bg=PN, highlightbackground=PN2, highlightthickness=1)
+        self.v = tk.Label(self, text="--", bg=PN, fg=ACC["c"], font=("Segoe UI", 20, "bold")); self.v.pack(pady=(8, 0))
+        tk.Label(self, text=cap, bg=PN, fg=DM, font=("Segoe UI", 8, "bold")).pack(pady=(0, 8))
+
+    def set(self, t):
+        self.v.config(text=t)
+
+
 ROWS = [
     [("ESC", "Esc", 1), (None, "", 1)] + [("F%d" % i, "F%d" % i, 1) for i in range(1, 13)],
     [(c, c, 1) for c in "`1234567890-="] + [("BACKSPACE", "Bksp", 2)],
@@ -154,19 +191,22 @@ ROWS = [
 
 class KeyboardView(tk.Canvas):
     def __init__(self, parent, app, U=36):
-        super().__init__(parent, width=int(18.6 * U), height=int(6.5 * U), bg=BG, highlightthickness=0)
-        self.app, self.keys, self.W = app, {}, 18.6 * U
-        y = 0.1
+        W, H = 18.4 * U, 6.75 * U
+        super().__init__(parent, width=int(W), height=int(H), bg=BG, highlightthickness=0)
+        self.app, self.keys, self.W = app, {}, W
+        rrect(self, 1, 1, W - 1, H - 1, 16, fill="#090c10", outline=PN2, width=2)
+        y = 0.3
         for r, row in enumerate(ROWS):
-            x = 0.1
+            x = 0.3
             for name, label, w in row:
                 if name:
                     x0, y0 = x * U, y * U
-                    rid = self.create_rectangle(x0, y0, x0 + w * U - 4, y0 + U - 4, fill=PN, outline=DM, width=2)
-                    tid = self.create_text(x0 + (w * U - 4) / 2, y0 + (U - 4) / 2, text=label, fill=DM, font=("Segoe UI", 9, "bold"))
-                    self.keys.setdefault(name, []).append((rid, tid, x0 / self.W))
+                    x1, y1 = x0 + w * U - 5, y0 + U - 5
+                    rid = rrect(self, x0, y0, x1, y1, 7, fill=PN, outline=DM, width=2)
+                    tid = self.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=label, fill=DM, font=("Segoe UI", 9, "bold"))
+                    self.keys.setdefault(name, []).append((rid, tid, x0 / W))
                 x += w
-            y += 1.35 if r == 0 else 1
+            y += 1.3 if r == 0 else 1
         self.update_colors()
 
     def col(self, xr, t):
@@ -189,20 +229,28 @@ class KeyboardView(tk.Canvas):
 
 class MouseView(tk.Canvas):
     def __init__(self, parent, app):
-        super().__init__(parent, width=170, height=230, bg=BG, highlightthickness=0)
+        super().__init__(parent, width=170, height=240, bg=PN, highlightthickness=0)
         self.app = app
-        self.body = self.create_oval(10, 5, 160, 225, fill=PN, outline=DM, width=3)
-        self.L = self.create_polygon(30, 60, 45, 30, 82, 18, 82, 95, 30, 95, fill=PN, outline=DM, width=2)
-        self.R = self.create_polygon(140, 60, 125, 30, 88, 18, 88, 95, 140, 95, fill=PN, outline=DM, width=2)
-        self.M = self.create_rectangle(78, 40, 92, 75, fill=PN, outline=DM, width=2)
+        dark = "#0d1117"
+        self.body = self.create_polygon(85, 4, 125, 12, 152, 52, 162, 120, 156, 192, 130, 228, 85, 236, 40, 228, 14, 192, 8, 120, 18, 52, 45, 12,
+                                        smooth=True, fill=dark, outline=DM, width=3)
+        self.L = self.create_polygon(30, 66, 46, 28, 82, 12, 82, 106, 22, 106, smooth=True, fill=dark, outline=DM, width=2)
+        self.R = self.create_polygon(140, 66, 124, 28, 88, 12, 88, 106, 148, 106, smooth=True, fill=dark, outline=DM, width=2)
+        self.M = rrect(self, 77, 34, 93, 76, 7, fill=dark, outline=DM, width=2)
+        self.X1 = rrect(self, 9, 120, 21, 150, 4, fill=dark, outline=DM, width=2)
+        self.X2 = rrect(self, 9, 156, 21, 186, 4, fill=dark, outline=DM, width=2)
+        self.glow = self.create_oval(68, 150, 102, 184, fill=dark, outline=DM, width=2)
+        self.create_text(85, 98, text="", fill=DM)
         self.update_colors()
 
     def update_colors(self):
         c, pc, d = self.app.cfg["ms_color"], self.app.cfg["kb_press"], self.app.mdown
         wheel = time.time() - self.app.wheel_t < 0.15
         self.itemconfig(self.body, outline=c)
-        for item, name, on in ((self.L, "left", "left" in d), (self.R, "right", "right" in d), (self.M, "middle", "middle" in d or wheel)):
-            self.itemconfig(item, fill=pc if on else PN, outline=c)
+        for item, on in ((self.L, "left" in d), (self.R, "right" in d), (self.M, "middle" in d or wheel),
+                         (self.X1, "x1" in d), (self.X2, "x2" in d)):
+            self.itemconfig(item, fill=pc if on else "#0d1117", outline=c)
+        self.itemconfig(self.glow, fill=c, outline=c)
 
 
 class PadView(tk.Canvas):
@@ -210,35 +258,67 @@ class PadView(tk.Canvas):
     PS = {"A": 0, "B": 1, "X": 2, "Y": 3, "LB": 9, "RB": 10, "BACK": 4, "START": 6, "L3": 7, "R3": 8}
 
     def __init__(self, parent, app):
-        super().__init__(parent, width=400, height=260, bg=BG, highlightthickness=0)
-        self.app, self.it = app, {}
-        c = app.cfg["ms_color"]
-        for box in ((30, 120, 130, 250), (270, 120, 370, 250), (50, 50, 350, 210)):
-            self.create_oval(*box, fill=PN, outline=c, width=2)
-        self.create_oval(53, 53, 347, 207, fill=PN, outline=PN)
-        part = lambda n, box, col, kind="r": self.it.__setitem__(n, (
-            (self.create_oval if kind == "o" else self.create_rectangle)(*box, fill=PN, outline=col, width=2), col))
-        for n, box in (("LT", (70, 14, 140, 36)), ("RT", (260, 14, 330, 36)), ("LB", (60, 40, 150, 56)), ("RB", (250, 40, 340, 56)),
-                       ("UP", (152, 136, 168, 152)), ("DOWN", (152, 168, 168, 184)), ("LEFT", (136, 152, 152, 168)), ("RIGHT", (168, 152, 184, 168))):
-            part(n, box, c)
-        part("L3", (86, 76, 138, 128), c, "o"); part("R3", (226, 138, 278, 190), c, "o")
-        part("BACK", (172, 92, 192, 104), c, "o"); part("START", (208, 92, 228, 104), c, "o")
-        for n, (x, y), col in (("Y", (300, 78), "#e3b341"), ("A", (300, 122), "#3fb950"), ("X", (278, 100), "#58a6ff"), ("B", (322, 100), "#f85149")):
-            part(n, (x - 11, y - 11, x + 11, y + 11), col, "o")
-            self.create_text(x, y, text=n, fill=col, font=("Segoe UI", 9, "bold"))
-        for n, tx, ty in (("LT", 105, 25), ("RT", 295, 25), ("LB", 105, 48), ("RB", 295, 48)):
-            self.create_text(tx, ty, text=n, fill=DM, font=("Segoe UI", 8))
-        self.ld = self.create_oval(103, 93, 121, 111, fill=c, outline="")
-        self.rd = self.create_oval(243, 155, 261, 173, fill=c, outline="")
+        super().__init__(parent, width=400, height=270, bg=BG, highlightthickness=0)
+        self.app, self.kind, self.it = app, "XB", {}
+        self.draw()
+
+    def set_kind(self, k):
+        if k != self.kind:
+            self.kind = k; self.draw()
+
+    def draw(self):
+        self.delete("all"); self.it = {}
+        a = self.app.cfg
+        black = a.get("pad_color") == "Black"
+        body, edge, btn = ("#2a2f37", "#454b55", "#101317") if black else ("#f2f3f5", "#9aa1ab", "#3a3f47")
+        ps, sw = self.kind == "PS", self.kind == "SW"
+        pts = ([90, 62, 150, 50, 250, 50, 310, 62, 350, 100, 372, 190, 352, 236, 318, 240, 290, 205, 255, 185, 145, 185, 110, 205, 82, 240, 48, 236, 28, 190, 50, 100] if ps else
+               [80, 60, 150, 48, 250, 48, 320, 60, 360, 110, 378, 190, 356, 236, 322, 242, 292, 204, 256, 182, 144, 182, 108, 204, 78, 242, 44, 236, 22, 190, 40, 110])
+        self.create_polygon(*pts, smooth=True, fill=body, outline=edge, width=3)
+        L3, R3, DP, FC, BK, ST = (((140, 168), (260, 168), (92, 102), (308, 102), (150, 92), (250, 92)) if ps else
+                                  ((112, 104), (254, 166), (160, 160), (300, 102), (180, 100), (220, 100)))
+        self.lc, self.rc = L3, R3
+
+        def part(n, box, kind="r", fill=btn, lit=None):
+            i = (self.create_oval if kind == "o" else self.create_rectangle)(*box, fill=fill, outline=edge, width=2)
+            self.it[n] = (i, lit or a["ms_color"], fill)
+
+        if ps:
+            self.create_rectangle(165, 70, 235, 112, fill=body, outline=edge, width=2)
+            self.create_oval(192, 142, 208, 158, fill=btn, outline=edge)
+        for n, box in (("LT", (70, 16, 140, 40)), ("RT", (260, 16, 330, 40)), ("LB", (60, 44, 150, 60)), ("RB", (250, 44, 340, 60))):
+            part(n, box, fill=body)
+        for n, tx, ty in (("LT", 105, 28), ("RT", 295, 28), ("LB", 105, 52), ("RB", 295, 52)):
+            self.create_text(tx, ty, text=n, fill=edge, font=("Segoe UI", 8, "bold"))
+        cx, cy = DP
+        self.create_rectangle(cx - 8, cy - 8, cx + 8, cy + 8, fill=btn, outline=btn)
+        for n, box in (("UP", (cx - 8, cy - 24, cx + 8, cy - 8)), ("DOWN", (cx - 8, cy + 8, cx + 8, cy + 24)),
+                       ("LEFT", (cx - 24, cy - 8, cx - 8, cy + 8)), ("RIGHT", (cx + 8, cy - 8, cx + 24, cy + 8))):
+            part(n, box)
+        for n, (x, y) in (("L3", L3), ("R3", R3)):
+            part(n, (x - 26, y - 26, x + 26, y + 26), "o")
+        part("BACK", (BK[0] - 10, BK[1] - 6, BK[0] + 10, BK[1] + 6), "o"); part("START", (ST[0] - 10, ST[1] - 6, ST[0] + 10, ST[1] + 6), "o")
+        fx, fy = FC
+        faces = ((("Y", (fx, fy - 22), "#e3b341"), ("A", (fx, fy + 22), "#3fb950"), ("X", (fx - 22, fy), "#58a6ff"), ("B", (fx + 22, fy), "#f85149")) if not ps else
+                 (("Y", (fx, fy - 22), "#4ade80"), ("A", (fx, fy + 22), "#6ea8ff"), ("X", (fx - 22, fy), "#ff8ad8"), ("B", (fx + 22, fy), "#ff6b6b")))
+        sym = {"Y": "\u25b3", "A": "\u2715", "X": "\u25a1", "B": "\u25cb"}
+        swl = {"Y": "X", "A": "B", "X": "Y", "B": "A"}
+        for n, (x, y), col in faces:
+            part(n, (x - 12, y - 12, x + 12, y + 12), "o", lit=a["ms_color"] if sw else col)
+            self.create_text(x, y, text=sym[n] if ps else (swl[n] if sw else n), fill="#c9d1d9" if sw else col, font=("Segoe UI Symbol", 11, "bold"))
+        d = "#8b949e"
+        self.ld = self.create_oval(0, 0, 0, 0, fill=d, outline=""); self.rd = self.create_oval(0, 0, 0, 0, fill=d, outline="")
+        self.sticks(0, 0, 0, 0)
 
     def lit(self, name, on):
         if name in self.it:
-            i, col = self.it[name]
-            self.itemconfig(i, fill=col if on else PN)
+            i, col, idle = self.it[name]
+            self.itemconfig(i, fill=col if on else idle)
 
     def sticks(self, lx, ly, rx, ry):
-        self.coords(self.ld, 103 + lx * 14, 93 + ly * 14, 121 + lx * 14, 111 + ly * 14)
-        self.coords(self.rd, 243 + rx * 14, 155 + ry * 14, 261 + rx * 14, 173 + ry * 14)
+        (lx0, ly0), (rx0, ry0) = self.lc, self.rc
+        self.coords(self.ld, lx0 - 9 + lx * 14, ly0 - 9 + ly * 14, lx0 + 9 + lx * 14, ly0 + 9 + ly * 14)
+        self.coords(self.rd, rx0 - 9 + rx * 14, ry0 - 9 + ry * 14, rx0 + 9 + rx * 14, ry0 + 9 + ry * 14)
 
 
 ACTIONS = (["(none)"] + list("abcdefghijklmnopqrstuvwxyz0123456789") + ["space", "enter", "shift", "ctrl", "alt", "tab", "esc", "up", "down", "left", "right"]
@@ -250,7 +330,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.cfg = load_cfg()
-        self.title("NASHAMA"); self.geometry("720x690"); self.configure(bg=BG); self.minsize(700, 660)
+        self.title("NASHAMA"); self.geometry("720x720"); self.configure(bg=BG); self.minsize(700, 700)
         self.q = queue.Queue(); self.dev_names = ([], []); self.pads = {}; self.wins = {}
         self.kstat, self.mstat, self.pstat = {}, {}, {}
         self.kdown, self.klast_up, self.mlast = {}, {}, {}
@@ -275,7 +355,7 @@ class App(tk.Tk):
         self.after(50, self.anim); self.after(200, self.tick_info); self.after(3000, self.auto_refresh)
 
     def sty(self):
-        a = self.cfg["accent"]; s = ttk.Style(self); s.theme_use("clam")
+        a = self.cfg["accent"]; ACC["c"] = a; s = ttk.Style(self); s.theme_use("clam")
         s.configure(".", background=BG, foreground=TX, fieldbackground=PN, font=("Segoe UI", 10))
         s.configure("Treeview", background=PN, fieldbackground=PN, foreground=TX, rowheight=26, borderwidth=0)
         s.configure("Treeview.Heading", background=PN2, foreground=a, font=("Segoe UI", 10, "bold"))
@@ -297,23 +377,32 @@ class App(tk.Tk):
     # ---------- home ----------
     def build(self):
         a = self.cfg["accent"]
-        hd = tk.Frame(self, bg=BG); hd.pack(fill="x", padx=14, pady=(12, 2))
+        hd = tk.Frame(self, bg=BG); hd.pack(fill="x", padx=16, pady=(14, 2))
         lg = tk.Canvas(hd, width=52, height=52, bg=BG, highlightthickness=0); lg.pack(side="left")
         self.logo = lg.create_polygon(26, 2, 48, 9, 48, 28, 26, 50, 4, 28, 4, 9, fill=a)
         lg.create_text(26, 27, text="N", font=("Segoe UI", 20, "bold"), fill="#000")
         tf = tk.Frame(hd, bg=BG); tf.pack(side="left", padx=10)
         self.title_l = tk.Label(tf, text="NASHAMA", bg=BG, fg=a, font=("Segoe UI", 24, "bold")); self.title_l.pack(anchor="w")
         self.lbl(tf, "Input Devices Toolkit", fg=DM).pack(anchor="w")
-        self.lbl(hd, "Admin" if is_admin() else "Not admin (device control needs Admin)", fg=OK if is_admin() else DM).pack(side="right")
-        bar = tk.Frame(self, bg=BG); bar.pack(pady=8)
+        self.lbl(hd, "ADMIN" if is_admin() else "Not admin (device control needs Admin)", fg=OK if is_admin() else DM,
+                 font=("Segoe UI", 9, "bold")).pack(side="right")
+        bar = tk.Frame(self, bg=BG); bar.pack(pady=12)
         for txt, fn in (("Keyboard Lab", self.w_kb), ("Mouse Lab", self.w_ms), ("Gamepad", self.w_pad),
                         ("Macros", self.w_mac), ("Devices", self.w_dev), ("Style", self.w_style)):
-            ttk.Button(bar, text=txt, command=fn).pack(side="left", padx=4)
-        self.kv = KeyboardView(self, self); self.kv.pack(padx=14, pady=6)
-        bt = tk.Frame(self, bg=BG); bt.pack(fill="x", padx=14, pady=6)
-        self.mv = MouseView(bt, self); self.mv.pack(side="left")
-        self.info = tk.Label(bt, text="", bg=BG, fg=TX, justify="left", anchor="nw", font=("Consolas", 11), wraplength=480)
-        self.info.pack(side="left", fill="both", expand=True, padx=16)
+            RBtn(bar, text=txt, command=fn).pack(side="left", padx=4)
+        card = tk.Frame(self, bg=PN2); card.pack(padx=16, pady=6)
+        self.kv = KeyboardView(card, self); self.kv.pack(padx=1, pady=1)
+        bt = tk.Frame(self, bg=BG); bt.pack(fill="x", padx=16, pady=10)
+        mc = tk.Frame(bt, bg=PN2); mc.pack(side="left")
+        self.mv = MouseView(mc, self); self.mv.pack(padx=1, pady=1)
+        rt = tk.Frame(bt, bg=BG); rt.pack(side="left", fill="both", expand=True, padx=16)
+        g = tk.Frame(rt, bg=BG); g.pack(fill="x")
+        self.tiles = {}
+        for i, (k, cap) in enumerate((("hz", "POLLING RATE"), ("sp", "MOUSE SPEED"), ("cps", "CLICKS / SEC"), ("kps", "KEYS / SEC"))):
+            t = Tile(g, cap); t.grid(row=i // 2, column=i % 2, sticky="nsew", padx=4, pady=4); self.tiles[k] = t
+        g.columnconfigure((0, 1), weight=1)
+        self.info = tk.Label(rt, text="", bg=BG, fg=DM, justify="left", anchor="nw", font=("Segoe UI", 10), wraplength=400)
+        self.info.pack(fill="x", pady=10)
 
     def apply_theme(self):
         a = self.cfg["accent"]
@@ -335,7 +424,7 @@ class App(tk.Tk):
         self.klab = self.lbl(w, "Press any key...", fg=self.cfg["accent"], font=("Segoe UI", 20, "bold")); self.klab.pack(pady=8)
         self.kt = self.tree(w, ("Key", "Presses", "Avg hold ms", "Bounces", "Status"), (120, 100, 130, 100, 130), 12)
         self.kt.pack(fill="both", expand=True, padx=8, pady=6)
-        ttk.Button(w, text="Reset stats", command=lambda: (self.kstat.clear(), self.kt.delete(*self.kt.get_children()))).pack(pady=6)
+        RBtn(w, text="Reset stats", command=lambda: (self.kstat.clear(), self.kt.delete(*self.kt.get_children()))).pack(pady=6)
         for n in self.kstat: self.draw_k(n)
 
     def w_ms(self): self.open_win("ms", "NASHAMA - Mouse Lab", "560x400", self.b_ms)
@@ -344,7 +433,7 @@ class App(tk.Tk):
         self.mlab = self.lbl(w, "Move the mouse...", fg=self.cfg["accent"], font=("Segoe UI", 15, "bold")); self.mlab.pack(pady=8)
         self.mt = self.tree(w, ("Button", "Clicks", "Bounces", "Status"), (130, 110, 110, 130), 8)
         self.mt.pack(fill="both", expand=True, padx=8, pady=6)
-        ttk.Button(w, text="Reset stats", command=self.reset_mouse).pack(pady=6)
+        RBtn(w, text="Reset stats", command=self.reset_mouse).pack(pady=6)
         for n in self.mstat: self.draw_m(n)
 
     def verdict(self, n, ch, avg=None):
@@ -371,10 +460,20 @@ class App(tk.Tk):
         if alive(self.mt): self.mt.delete(*self.mt.get_children())
 
     # ---------- gamepad ----------
-    def pad_layout(self):
+    def pad_kind(self):
         j = next(iter(self.pads.values()), None)
         n = (j.get_name() if j else "").lower()
-        return PadView.PS if any(x in n for x in ("dualsense", "dualshock", "wireless controller", "playstation", "ps4", "ps5")) else PadView.XB
+        if any(x in n for x in ("pro controller", "nintendo", "switch", "joy-con")):
+            return "SW"
+        return "PS" if any(x in n for x in ("dualsense", "dualshock", "wireless controller", "playstation", "ps4", "ps5")) else "XB"
+
+    def pad_layout(self):
+        return PadView.PS if self.pad_kind() == "PS" else PadView.XB
+
+    def toggle_pad_color(self):
+        self.cfg["pad_color"] = "White" if self.cfg.get("pad_color") == "Black" else "Black"
+        save_cfg(self.cfg)
+        if alive(self.pv): self.pv.draw()
 
     def w_pad(self): self.open_win("pad", "NASHAMA - Gamepad", "960x600", self.b_pad)
 
@@ -382,7 +481,8 @@ class App(tk.Tk):
         L = tk.Frame(w, bg=BG); L.pack(side="left", padx=10, pady=10)
         self.plab = self.lbl(L, "", fg=self.cfg["accent"], font=("Segoe UI", 13, "bold")); self.plab.pack(pady=4)
         self.pv = PadView(L, self); self.pv.pack()
-        self.lbl(L, "Highlight assumes Xbox / PlayStation layout.\nMapping below works with any pad.", fg=DM).pack(pady=6)
+        RBtn(L, text="Switch controller color: White / Black", command=self.toggle_pad_color).pack(pady=4)
+        self.lbl(L, "Drawing: Xbox / PlayStation / Switch.\nMapping below works with any pad.", fg=DM).pack(pady=6)
         f = tk.Frame(L, bg=BG); f.pack(pady=4)
         self.lbl(f, "Turbo clicks/sec").pack(side="left")
         self.tcps = tk.StringVar(value=str(self.cfg["turbo_cps"]))
@@ -408,7 +508,8 @@ class App(tk.Tk):
     def on_pad_change(self):
         if alive(getattr(self, "plab", None)):
             j = next(iter(self.pads.values()), None)
-            self.plab.config(text=("Controller: " + j.get_name()) if j else "Connect a controller...")
+            kind = {"PS": "PlayStation", "SW": "Nintendo Switch", "XB": "Xbox / Generic"}[self.pad_kind()]
+            self.plab.config(text=("%s  [%s]" % (j.get_name(), kind)) if j else "Connect a controller...")
 
     def draw_pad_row(self, n):
         if n in self.prow and alive(self.prow[n][0]):
@@ -474,7 +575,7 @@ class App(tk.Tk):
             self.lbl(c, l).grid(row=i, column=0, sticky="w", padx=6, pady=4)
             ttk.Entry(c, textvariable=v, width=14).grid(row=i, column=1, pady=4)
         self.mstate = self.lbl(c, "Stopped", fg=BAD, font=("Segoe UI", 12, "bold")); self.mstate.grid(row=3, column=0, columnspan=2, pady=4)
-        ttk.Button(c, text="Apply / Start-Stop", command=self.mac_toggle).grid(row=4, column=0, columnspan=2, pady=4)
+        RBtn(c, text="Apply / Start-Stop", command=self.mac_toggle).grid(row=4, column=0, columnspan=2, pady=4)
         self.lbl(w, "Gamepad button macros: Gamepad window > Action + Turbo.\nSome online games block macros (anti-cheat). Use at your own risk.", fg=DM).pack(pady=8)
 
     def mac_toggle(self):
@@ -492,7 +593,7 @@ class App(tk.Tk):
         self.dt = self.tree(w, ("Type", "Name", "Status"), (150, 460, 80), 11); self.dt.pack(fill="both", expand=True, padx=8, pady=8)
         b = ttk.Frame(w); b.pack(pady=4)
         for t, fn in (("Refresh", self.refresh_devices), ("Disable", lambda: self.dev_act("dis")), ("Enable", lambda: self.dev_act("en")), ("Reset", lambda: self.dev_act("rst"))):
-            ttk.Button(b, text=t, command=fn).pack(side="left", padx=5)
+            RBtn(b, text=t, command=fn).pack(side="left", padx=5)
         self.dmsg = self.lbl(w, "", fg=DM); self.dmsg.pack()
         self.show_devs(getattr(self, "devs", []))
 
@@ -535,7 +636,7 @@ class App(tk.Tk):
     def b_style(self, w):
         self.lbl(w, "Colors", fg=self.cfg["accent"], font=("Segoe UI", 14, "bold")).pack(pady=(14, 4))
         for t, k in (("Keyboard color", "kb_color"), ("Pressed key color", "kb_press"), ("Mouse + gamepad color", "ms_color"), ("App accent color", "accent")):
-            ttk.Button(w, text=t, command=lambda k=k: self.pick(k)).pack(pady=3)
+            RBtn(w, text=t, command=lambda k=k: self.pick(k)).pack(pady=3)
         self.lbl(w, "Quick presets (keyboard + mouse)").pack(pady=(12, 4))
         pf = tk.Frame(w, bg=BG); pf.pack()
         for n, c in PRESETS.items():
@@ -551,7 +652,7 @@ class App(tk.Tk):
         sc.pack()
         tv = tk.BooleanVar(value=self.cfg["topmost"])
         ttk.Checkbutton(w, text="Always on top", variable=tv, command=lambda: (self.cfg.update(topmost=tv.get()), self.apply_theme())).pack(pady=10)
-        ttk.Button(w, text="Reset all stats", command=self.reset_all).pack(pady=4)
+        RBtn(w, text="Reset all stats", command=self.reset_all).pack(pady=4)
 
     def reset_all(self):
         self.kstat.clear(); self.pstat.clear(); self.reset_mouse()
@@ -608,18 +709,21 @@ class App(tk.Tk):
         self.after(250, self.mouse_calc)
 
     def anim(self):
-        self.kv.update_colors(); self.mv.update_colors(); self.after(50, self.anim)
+        self.kv.update_colors(); self.mv.update_colors()
+        if alive(self.pv): self.pv.set_kind(self.pad_kind())
+        self.after(50, self.anim)
 
     def tick_info(self):
         now = time.perf_counter()
         for dq in (self.clicks, self.keyhits):
             while dq and now - dq[0] > 1: dq.popleft()
         j = next(iter(self.pads.values()), None)
-        self.info.config(text="KEYBOARD  %s\nMOUSE     %s\nGAMEPAD   %s\n\nPolling   %.0f Hz  (max %.0f)\nSpeed     %.0f px/s\nClicks/s  %d\nKeys/s    %d" % (
+        self.tiles["hz"].set("%.0f Hz" % self.hz); self.tiles["sp"].set("%.0f px/s" % self.sp)
+        self.tiles["cps"].set(str(len(self.clicks))); self.tiles["kps"].set(str(len(self.keyhits)))
+        self.info.config(text="Keyboard:  %s\nMouse:  %s\nGamepad:  %s\nMax polling:  %.0f Hz" % (
             " | ".join(self.dev_names[0]) or "detecting...", " | ".join(self.dev_names[1]) or "detecting...",
-            j.get_name() if j else "not connected", self.hz, self.maxhz, self.sp, len(self.clicks), len(self.keyhits)))
+            j.get_name() if j else "not connected", self.maxhz))
         self.after(200, self.tick_info)
-
 
 if __name__ == "__main__":
     App().mainloop()
