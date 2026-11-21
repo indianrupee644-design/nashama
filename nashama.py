@@ -271,9 +271,9 @@ def rrect(c, x0, y0, x1, y1, r=8, **kw):
 
 class RBtn(tk.Canvas):
     """Rounded flat button with hover effect"""
-    def __init__(self, parent, text="", command=None, bg=BG, **kw):
-        f = tkfont.Font(family="Segoe UI", size=10, weight="bold")
-        w, h = f.measure(text) + 34, 36
+    def __init__(self, parent, text="", command=None, bg=BG, h=36, fs=10, **kw):
+        f = tkfont.Font(family="Segoe UI", size=fs, weight="bold")
+        w = f.measure(text) + 34
         super().__init__(parent, width=w, height=h, bg=bg, highlightthickness=0, cursor="hand2")
         self.cmd, self.w, self.h = command, w, h
         self.shape = rrect(self, 1, 1, w - 1, h - 1, 12, fill=ACC["c"], outline="")
@@ -469,7 +469,7 @@ class App(tk.Tk):
         self.mac, self.hotkey, self.padmacros, self.trig, self.hatprev = Macro(), "f6", {}, {}, set()
         self.m_t, self.m_c, self.m_h = tk.StringVar(value="f5"), tk.StringVar(value="10"), tk.StringVar(value="f6")
         self.kt = self.mt = self.pv = self.klab = self.mlab = self.dmsg = self.dt = self.mstate = self.pt = None
-        self.prow = {}
+        self.prow, self.pvars, self.rlab, self.learn_row, self.learn_t, self.nrow = {}, {}, {}, None, 0, 1
         self.sty(); self.build()
         self.attributes("-topmost", self.cfg["topmost"]); self.attributes("-alpha", self.cfg["alpha"])
         pygame.display.init(); pygame.joystick.init()
@@ -492,6 +492,13 @@ class App(tk.Tk):
         s.configure("TButton", background=a, foreground="#000", padding=8, font=("Segoe UI", 10, "bold"))
         s.map("TButton", background=[("active", blend(a, "#ffffff", 0.75))])
         s.configure("TFrame", background=BG); s.configure("TLabel", background=BG)
+        s.configure("TCheckbutton", background=BG, foreground=TX)
+        s.configure("TEntry", fieldbackground=PN, foreground=TX, insertcolor=TX)
+        s.configure("TCombobox", fieldbackground=PN, foreground=TX, background=PN2, arrowcolor=a, insertcolor=TX)
+        s.map("TCombobox", fieldbackground=[("readonly", PN)], foreground=[("readonly", TX)],
+              selectbackground=[("readonly", PN)], selectforeground=[("readonly", TX)])
+        self.option_add("*TCombobox*Listbox.background", PN); self.option_add("*TCombobox*Listbox.foreground", TX)
+        self.option_add("*TCombobox*Listbox.selectBackground", a); self.option_add("*TCombobox*Listbox.selectForeground", "#000000")
         s.configure("TCheckbutton", background=BG, foreground=TX)
 
     def tree(self, parent, cols, widths, h=9):
@@ -605,7 +612,7 @@ class App(tk.Tk):
         save_cfg(self.cfg)
         if alive(self.pv): self.pv.draw()
 
-    def w_pad(self): self.open_win("pad", "النشاما - اليد", "1180x660", self.b_pad)
+    def w_pad(self): self.open_win("pad", "النشاما - اليد", "1180x800", self.b_pad)
 
     def b_pad(self, w):
         L = tk.Frame(w, bg=BG); L.pack(side="left", padx=10, pady=10)
@@ -616,25 +623,19 @@ class App(tk.Tk):
         self.lbl(L, "عادي = ضغطة عادية\nتيربو = يكرر طول ما أنت ضاغط الزر\nتشغيل/إيقاف = ضغطة وحدة تشغّل وضغطة ثانية توقف", fg=DM, justify="left").pack(pady=4)
         RBtn(L, text="إيقاف كل الماكرو", command=self.stop_all).pack(pady=6)
         R = tk.Frame(w, bg=BG); R.pack(side="left", fill="both", expand=True, padx=6, pady=10)
+        self.rowsf, self.nrow = R, 1
+        self.prow, self.pvars, self.rlab = {}, {}, {}
         for c, t in enumerate(("الزر", "الإجراء", "النمط", "السرعة / ث", "الضغطات", "الحالة")):
             tk.Label(R, text=t, bg=PN2, fg=self.cfg["accent"], font=("Segoe UI", 10, "bold")).grid(row=0, column=c, sticky="ew", padx=1, pady=1)
-        self.speedmsg = self.lbl(R, "", fg=BAD)
-        self.prow = {}
-        for r, n in enumerate(PADROWS, 1):
-            self.lbl(R, n).grid(row=r, column=0, pady=2)
-            v = tk.StringVar(value=self.cfg["padmap"].get(n, "بدون"))
-            v.trace_add("write", lambda *a, n=n, v=v: (self.cfg["padmap"].__setitem__(n, v.get()), save_cfg(self.cfg)))
-            ttk.Combobox(R, textvariable=v, values=ACTIONS, width=11).grid(row=r, column=1, padx=3)
-            mv = tk.StringVar(value=self.cfg["padmode"].get(n, MODES[0]))
-            mv.trace_add("write", lambda *a, n=n, mv=mv: (self.cfg["padmode"].__setitem__(n, mv.get()), save_cfg(self.cfg)))
-            ttk.Combobox(R, textvariable=mv, values=MODES, state="readonly", width=24).grid(row=r, column=2, padx=3)
-            sv = tk.StringVar(value=str(self.cfg["padcps"].get(n, 15)))
-            sv.trace_add("write", lambda *a, n=n, sv=sv: self.set_cps(n, sv.get()))
-            ttk.Entry(R, textvariable=sv, width=9).grid(row=r, column=3, padx=3)
-            c1, c2 = self.lbl(R, "0"), self.lbl(R, "-", fg=DM)
-            c1.grid(row=r, column=4); c2.grid(row=r, column=5, padx=8)
-            self.prow[n] = (c1, c2)
-        self.speedmsg.grid(row=len(PADROWS) + 1, column=0, columnspan=6, pady=6)
+        self.speedmsg = self.lbl(R, "", fg=BAD); self.speedmsg.grid(row=999, column=0, columnspan=6, pady=6)
+        for n in PADROWS:
+            self.add_row(n)
+        j = next(iter(self.pads.values()), None)
+        if j:
+            used = set(self.pad_layout().values())
+            for i in range(j.get_numbuttons()):
+                if i not in used:
+                    self.add_row("BTN%d" % i)
         self.on_pad_change()
         for n in self.pstat: self.draw_pad_row(n)
 
@@ -653,6 +654,10 @@ class App(tk.Tk):
             else: self.prow[n][1].config(text=v, fg=OK if tag == "ok" else BAD)
 
     def pad_event(self, name, down):
+        if name not in self.prow and alive(getattr(self, "rowsf", None)):
+            self.add_row(name)
+        lb = self.rlab.get(name)
+        if alive(lb): lb.config(fg=self.cfg["accent"] if down else TX)
         ts = time.perf_counter()
         st = self.pstat.setdefault(name, {"n": 0, "ch": 0, "up": 0})
         if down:
@@ -823,6 +828,7 @@ class App(tk.Tk):
                 elif t == "wh": self.wheel_t = time.time()
                 elif t == "kd":
                     n, ts = e[1], e[2]
+                    if self.learn_row: self.finish_learn(n, ts)
                     if n not in self.kdown:
                         self.kdown[n] = ts; self.keyhits.append(ts)
                         st = self.kstat.setdefault(n, {"n": 0, "d": [], "ch": 0}); st["n"] += 1
@@ -837,6 +843,7 @@ class App(tk.Tk):
                 elif t == "mc":
                     b, ts, p = e[1], e[2], e[3]
                     if p:
+                        if self.learn_row: self.finish_learn(b, ts, True)
                         self.mdown.add(b); self.clicks.append(ts)
                         s = self.mstat.setdefault(b, {"n": 0, "ch": 0}); s["n"] += 1
                         if ts - self.mlast.get(b, -1) < CHATTER: s["ch"] += 1
@@ -896,6 +903,46 @@ class App(tk.Tk):
         if alive(self.mstate): self.mstate.config(text="متوقف", fg=BAD)
         for n in list(self.prow):
             if n in self.pstat: self.draw_pad_row(n)
+
+    def add_row(self, n):
+        R, r = self.rowsf, self.nrow; self.nrow += 1
+        lb = self.lbl(R, n); lb.grid(row=r, column=0, pady=1, padx=4)
+        v = tk.StringVar(value=self.cfg["padmap"].get(n, "بدون")); self.pvars[n] = v
+        v.trace_add("write", lambda *a, n=n, v=v: (self.cfg["padmap"].__setitem__(n, v.get()), save_cfg(self.cfg)))
+        af = tk.Frame(R, bg=BG); af.grid(row=r, column=1, padx=3)
+        ttk.Combobox(af, textvariable=v, values=ACTIONS, width=11).pack(side="left")
+        RBtn(af, text="تسجيل", command=lambda n=n: self.start_learn(n), h=26, fs=9).pack(side="left", padx=3)
+        mv = tk.StringVar(value=self.cfg["padmode"].get(n, MODES[0]))
+        mv.trace_add("write", lambda *a, n=n, mv=mv: (self.cfg["padmode"].__setitem__(n, mv.get()), save_cfg(self.cfg)))
+        ttk.Combobox(R, textvariable=mv, values=MODES, state="readonly", width=24).grid(row=r, column=2, padx=3)
+        sv = tk.StringVar(value=str(self.cfg["padcps"].get(n, 15)))
+        sv.trace_add("write", lambda *a, n=n, sv=sv: self.set_cps(n, sv.get()))
+        ttk.Entry(R, textvariable=sv, width=9).grid(row=r, column=3, padx=3)
+        c1, c2 = self.lbl(R, "0"), self.lbl(R, "-", fg=DM)
+        c1.grid(row=r, column=4); c2.grid(row=r, column=5, padx=8)
+        self.prow[n] = (c1, c2); self.rlab[n] = lb
+        if n in self.pstat: self.draw_pad_row(n)
+
+    def start_learn(self, n):
+        self.learn_row, self.learn_t = n, time.perf_counter()
+        if alive(getattr(self, "speedmsg", None)):
+            self.speedmsg.config(text="اضغط الحين الزر أو الكليك اللي تبيه (Esc للإلغاء)", fg=self.cfg["accent"])
+
+    def finish_learn(self, name, ts, mouse=False):
+        if not self.learn_row or ts < self.learn_t + 0.25:
+            return
+        n, self.learn_row = self.learn_row, None
+        if not mouse and name == "ESC":
+            msg = "تم الإلغاء"
+        else:
+            tgt = {"left": "كليك يسار", "right": "كليك يمين", "middle": "كليك وسط"}.get(name) if mouse else name.lower()
+            if tgt is None or parse_target(tgt) is None:
+                msg = "هذا الزر مو مدعوم، جرّب زر ثاني"
+            else:
+                if n in self.pvars: self.pvars[n].set(tgt)
+                msg = "تم: زر اليد %s ← %s" % (n, tgt)
+        if alive(getattr(self, "speedmsg", None)):
+            self.speedmsg.config(text=msg, fg=OK)
 
     def set_cps(self, n, s):
         self.cfg["padcps"][n] = s; save_cfg(self.cfg)
