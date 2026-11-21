@@ -31,7 +31,7 @@ def _hook(t, v, tb):
 sys.excepthook = _hook
 threading.excepthook = lambda a: _hook(a.exc_type, a.exc_value, a.exc_traceback)
 DEF = {"accent": "#f5b301", "kb_color": "#f5b301", "kb_press": "#ffffff", "ms_color": "#f5b301",
-       "effect": "Static", "alpha": 1.0, "topmost": False, "padmap": {}, "padturbo": {}, "turbo_cps": 15, "pad_color": "White"}
+       "effect": "Static", "alpha": 1.0, "topmost": False, "padmap": {}, "padturbo": {}, "turbo_cps": 15, "pad_color": "White", "padmode": {}, "padcps": {}}
 ACC = {"c": "#f5b301"}
 PRESETS = {"ذهبي": "#f5b301", "سماوي": "#22d3ee", "وردي": "#e040fb", "أخضر": "#7cfc00", "أحمر": "#ff3b3b", "أبيض": "#ffffff"}
 EFF = {"ثابت": "Static", "قوس قزح": "Rainbow", "تنفس": "Breathing"}
@@ -124,28 +124,122 @@ def press(t, down):
         pass
 
 
+MAX_CPS = 20000
+SPECIAL = {"space": 0x20, "enter": 0x0D, "shift": 0x10, "ctrl": 0x11, "alt": 0x12, "tab": 0x09, "esc": 0x1B,
+           "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27, **{"f%d" % i: 0x6F + i for i in range(1, 13)}}
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    class _MI(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class _KI(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class _U(ctypes.Union):
+        _fields_ = [("mi", _MI), ("ki", _KI)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+
+def fast_spec(t):
+    """Turn a target into raw SendInput data (mouse flags or key scancode)"""
+    if os.name != "nt" or t is None:
+        return None
+    if isinstance(t, ms.Button):
+        f = {ms.Button.left: (0x2, 0x4), ms.Button.right: (0x8, 0x10), ms.Button.middle: (0x20, 0x40)}.get(t)
+        return ("m",) + f if f else None
+    name = t if isinstance(t, str) else getattr(t, "name", "")
+    rvk = {v: k for k, v in VK.items()}
+    vk = rvk.get(name.upper()) or SPECIAL.get(name)
+    if not vk:
+        return None
+    scan = ctypes.windll.user32.MapVirtualKeyW(vk, 0)
+    return ("k", scan, 1 if name in ("up", "down", "left", "right") else 0)
+
+
+def make_pair(spec):
+    a, b = INPUT(), INPUT()
+    if spec[0] == "m":
+        a.type = b.type = 0
+        a.u.mi.dwFlags, b.u.mi.dwFlags = spec[1], spec[2]
+    else:
+        a.type = b.type = 1
+        a.u.ki.wScan = b.u.ki.wScan = spec[1]
+        a.u.ki.dwFlags = 0x8 | spec[2]
+        b.u.ki.dwFlags = 0x8 | spec[2] | 0x2
+    return [a, b]
+
+
+def tname(s):
+    t = parse_target(s)
+    if t is None:
+        return None
+    if isinstance(t, ms.Button):
+        return t.name
+    return (t if isinstance(t, str) else t.name).upper()
+
+
 class Macro:
+    """Repeats a key / mouse click. Above 50/s it sends batches with SendInput (up to MAX_CPS per second)"""
     def __init__(self):
-        self.on, self.target, self.cps = False, "f5", 10.0
+        self.on, self.target, self.cps, self.gen = False, "f5", 10.0, 0
 
     def start(self):
         if not self.on:
-            self.on = True
-            threading.Thread(target=self._run, daemon=True).start()
+            self.on = True; self.gen += 1
+            threading.Thread(target=self._run, args=(self.gen,), daemon=True).start()
 
     def stop(self):
         self.on = False
 
-    def _run(self):
-        while self.on:
-            t0 = time.perf_counter()
+    def _alive(self, g):
+        return self.on and g == self.gen
+
+    def _cps(self):
+        return max(0.1, min(self.cps, MAX_CPS))
+
+    def _run(self, g):
+        try:
             t = parse_target(self.target)
-            if t is not None:
-                if isinstance(t, ms.Button):
-                    msc.click(t)
-                else:
-                    kbc.press(t); kbc.release(t)
-            time.sleep(max(0.0, 1 / max(self.cps, 0.1) - (time.perf_counter() - t0)))
+            if t is None:
+                self.on = False; return
+            spec = fast_spec(t)
+            if spec and self._cps() > 50:
+                self._fast(spec, g)
+            else:
+                self._slow(t, g)
+        except Exception:
+            traceback.print_exc(file=LOG); self.on = False
+
+    def _slow(self, t, g):
+        while self._alive(g):
+            t0 = time.perf_counter()
+            if isinstance(t, ms.Button):
+                msc.click(t)
+            else:
+                kbc.press(t); kbc.release(t)
+            time.sleep(max(0.0, 1 / self._cps() - (time.perf_counter() - t0)))
+
+    def _fast(self, spec, g):
+        w = ctypes.windll
+        w.winmm.timeBeginPeriod(1)
+        try:
+            pair, sz = make_pair(spec), ctypes.sizeof(INPUT)
+            acc, last = 0.0, time.perf_counter()
+            while self._alive(g):
+                now = time.perf_counter(); acc += self._cps() * (now - last); last = now
+                k = int(acc); acc -= k; k = min(k, 2000)
+                if k:
+                    arr = (INPUT * (2 * k))(*(pair * k))
+                    w.user32.SendInput(2 * k, arr, sz)
+                time.sleep(0.001)
+        finally:
+            w.winmm.timeEndPeriod(1)
 
 
 VK = {**{0x41 + i: chr(65 + i) for i in range(26)}, **{0x30 + i: str(i) for i in range(10)},
@@ -358,6 +452,7 @@ class PadView(tk.Canvas):
 
 ACTIONS = (["بدون"] + list("abcdefghijklmnopqrstuvwxyz0123456789") + ["space", "enter", "shift", "ctrl", "alt", "tab", "esc", "up", "down", "left", "right"]
            + ["f%d" % i for i in range(1, 13)] + ["كليك يسار", "كليك يمين", "كليك وسط"])
+MODES = ["عادي", "تيربو (طول ما أضغط)", "تشغيل/إيقاف (ضغطة وحدة)"]
 PADROWS = ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "BACK", "START", "L3", "R3", "UP", "DOWN", "LEFT", "RIGHT"]
 
 
@@ -366,7 +461,7 @@ class App(tk.Tk):
         super().__init__()
         self.cfg = load_cfg()
         self.title("النشاما"); self.geometry("720x720"); self.configure(bg=BG); self.minsize(700, 700)
-        self.q = queue.Queue(); self.dev_names = ([], []); self.pads = {}; self.wins = {}
+        self.q = queue.Queue(maxsize=3000); self.dev_names = ([], []); self.pads = {}; self.wins = {}
         self.kstat, self.mstat, self.pstat = {}, {}, {}
         self.kdown, self.klast_up, self.mlast = {}, {}, {}
         self.mdown, self.wheel_t, self.moves, self.maxhz, self.hz, self.sp = set(), 0, [], 0, 0, 0
@@ -380,10 +475,10 @@ class App(tk.Tk):
         pygame.display.init(); pygame.joystick.init()
         for i in range(pygame.joystick.get_count()):
             j = pygame.joystick.Joystick(i); self.pads[j.get_instance_id()] = j
-        kb.Listener(on_press=lambda k: self.q.put(("kd", kname(k), time.perf_counter())),
-                    on_release=lambda k: self.q.put(("ku", kname(k), time.perf_counter())), daemon=True).start()
+        kb.Listener(on_press=lambda k: self._kq("kd", k),
+                    on_release=lambda k: self._kq("ku", k), daemon=True).start()
         ms.Listener(on_move=lambda x, y: self.moves.append((time.perf_counter(), x, y)),
-                    on_click=lambda x, y, b, p: self.q.put(("mc", str(b).replace("Button.", ""), time.perf_counter(), p)),
+                    on_click=lambda x, y, b, p: self._mq(b, p),
                     on_scroll=lambda x, y, dx, dy: self.q.put(("wh",)), daemon=True).start()
         self.refresh_devices()
         self.after(30, self.loop); self.after(16, self.pad_loop); self.after(250, self.mouse_calc)
@@ -510,7 +605,7 @@ class App(tk.Tk):
         save_cfg(self.cfg)
         if alive(self.pv): self.pv.draw()
 
-    def w_pad(self): self.open_win("pad", "النشاما - اليد", "960x600", self.b_pad)
+    def w_pad(self): self.open_win("pad", "النشاما - اليد", "1180x660", self.b_pad)
 
     def b_pad(self, w):
         L = tk.Frame(w, bg=BG); L.pack(side="left", padx=10, pady=10)
@@ -518,25 +613,28 @@ class App(tk.Tk):
         self.pv = PadView(L, self); self.pv.pack()
         RBtn(L, text="تغيير لون اليد: أبيض / أسود", command=self.toggle_pad_color).pack(pady=4)
         self.lbl(L, "الرسم: إكس بوكس / بلايستيشن / سويتش.\nجدول الأزرار يشتغل مع أي يد.", fg=DM).pack(pady=6)
-        f = tk.Frame(L, bg=BG); f.pack(pady=4)
-        self.lbl(f, "تيربو: ضغطة بالثانية").pack(side="left")
-        self.tcps = tk.StringVar(value=str(self.cfg["turbo_cps"]))
-        ttk.Entry(f, textvariable=self.tcps, width=6).pack(side="left", padx=6)
+        self.lbl(L, "عادي = ضغطة عادية\nتيربو = يكرر طول ما أنت ضاغط الزر\nتشغيل/إيقاف = ضغطة وحدة تشغّل وضغطة ثانية توقف", fg=DM, justify="left").pack(pady=4)
+        RBtn(L, text="إيقاف كل الماكرو", command=self.stop_all).pack(pady=6)
         R = tk.Frame(w, bg=BG); R.pack(side="left", fill="both", expand=True, padx=6, pady=10)
-        for c, t in enumerate(("الزر", "الإجراء", "تيربو", "الضغطات", "الحالة")):
+        for c, t in enumerate(("الزر", "الإجراء", "النمط", "السرعة / ث", "الضغطات", "الحالة")):
             tk.Label(R, text=t, bg=PN2, fg=self.cfg["accent"], font=("Segoe UI", 10, "bold")).grid(row=0, column=c, sticky="ew", padx=1, pady=1)
+        self.speedmsg = self.lbl(R, "", fg=BAD)
         self.prow = {}
         for r, n in enumerate(PADROWS, 1):
             self.lbl(R, n).grid(row=r, column=0, pady=2)
             v = tk.StringVar(value=self.cfg["padmap"].get(n, "بدون"))
             v.trace_add("write", lambda *a, n=n, v=v: (self.cfg["padmap"].__setitem__(n, v.get()), save_cfg(self.cfg)))
-            ttk.Combobox(R, textvariable=v, values=ACTIONS, width=12).grid(row=r, column=1, padx=4)
-            tv = tk.BooleanVar(value=self.cfg["padturbo"].get(n, False))
-            tv.trace_add("write", lambda *a, n=n, tv=tv: (self.cfg["padturbo"].__setitem__(n, tv.get()), save_cfg(self.cfg)))
-            ttk.Checkbutton(R, variable=tv).grid(row=r, column=2)
+            ttk.Combobox(R, textvariable=v, values=ACTIONS, width=11).grid(row=r, column=1, padx=3)
+            mv = tk.StringVar(value=self.cfg["padmode"].get(n, MODES[0]))
+            mv.trace_add("write", lambda *a, n=n, mv=mv: (self.cfg["padmode"].__setitem__(n, mv.get()), save_cfg(self.cfg)))
+            ttk.Combobox(R, textvariable=mv, values=MODES, state="readonly", width=24).grid(row=r, column=2, padx=3)
+            sv = tk.StringVar(value=str(self.cfg["padcps"].get(n, 15)))
+            sv.trace_add("write", lambda *a, n=n, sv=sv: self.set_cps(n, sv.get()))
+            ttk.Entry(R, textvariable=sv, width=9).grid(row=r, column=3, padx=3)
             c1, c2 = self.lbl(R, "0"), self.lbl(R, "-", fg=DM)
-            c1.grid(row=r, column=3); c2.grid(row=r, column=4, padx=8)
+            c1.grid(row=r, column=4); c2.grid(row=r, column=5, padx=8)
             self.prow[n] = (c1, c2)
+        self.speedmsg.grid(row=len(PADROWS) + 1, column=0, columnspan=6, pady=6)
         self.on_pad_change()
         for n in self.pstat: self.draw_pad_row(n)
 
@@ -549,7 +647,10 @@ class App(tk.Tk):
     def draw_pad_row(self, n):
         if n in self.prow and alive(self.prow[n][0]):
             s = self.pstat[n]; v, tag = self.verdict(s["n"], s["ch"])
-            self.prow[n][0].config(text=str(s["n"])); self.prow[n][1].config(text=v, fg=OK if tag == "ok" else BAD)
+            m = self.padmacros.get(n)
+            self.prow[n][0].config(text=str(s["n"]))
+            if m and m.on: self.prow[n][1].config(text="يشتغل ▶", fg=self.cfg["accent"])
+            else: self.prow[n][1].config(text=v, fg=OK if tag == "ok" else BAD)
 
     def pad_event(self, name, down):
         ts = time.perf_counter()
@@ -563,13 +664,17 @@ class App(tk.Tk):
         self.draw_pad_row(name)
         tgt = self.cfg["padmap"].get(name); t = parse_target(tgt)
         if t is None: return
-        if self.cfg["padturbo"].get(name):
-            m = self.padmacros.setdefault(name, Macro()); m.target = tgt
-            try: m.cps = float(self.cfg["turbo_cps"])
-            except ValueError: m.cps = 15
+        mode = self.cfg["padmode"].get(name, MODES[0])
+        if mode == MODES[0]:
+            press(t, down); return
+        m = self.padmacros.setdefault(name, Macro()); m.target = tgt
+        try: m.cps = float(self.cfg["padcps"].get(name, 15))
+        except ValueError: m.cps = 15
+        if mode == MODES[1]:
             m.start() if down else m.stop()
-        else:
-            press(t, down)
+        elif down:
+            m.stop() if m.on else m.start()
+        self.draw_pad_row(name)
 
     def pad_loop(self):
         try: self._pad_body()
@@ -616,6 +721,7 @@ class App(tk.Tk):
         self.mstate = self.lbl(c, "متوقف", fg=BAD, font=("Segoe UI", 12, "bold")); self.mstate.grid(row=3, column=0, columnspan=2, pady=4)
         RBtn(c, text="تطبيق / تشغيل-إيقاف", command=self.mac_toggle).grid(row=4, column=0, columnspan=2, pady=4)
         self.lbl(w, "ماكرو أزرار اليد: من نافذة اليد اختر الإجراء وفعّل تيربو.\nبعض الألعاب الأونلاين تمنع الماكرو (Anti-Cheat). استخدمه على مسؤوليتك.", fg=DM).pack(pady=8)
+        RBtn(w, text="إيقاف كل الماكرو", command=self.stop_all).pack(pady=6)
 
     def mac_toggle(self):
         self.mac.target = self.m_t.get()
@@ -763,6 +869,40 @@ class App(tk.Tk):
         except Exception:
             traceback.print_exc(file=LOG)
         self.after(50, self.anim)
+
+    def blocked(self, n):
+        for m in [self.mac, *self.padmacros.values()]:
+            if m.on and tname(m.target) == n:
+                return True
+        return False
+
+    def _kq(self, kind, k):
+        n = kname(k)
+        if kind == "kd" and self.blocked(n):
+            return
+        try: self.q.put_nowait((kind, n, time.perf_counter()))
+        except queue.Full: pass
+
+    def _mq(self, b, p):
+        n = str(b).replace("Button.", "")
+        if p and self.blocked(n):
+            return
+        try: self.q.put_nowait(("mc", n, time.perf_counter(), p))
+        except queue.Full: pass
+
+    def stop_all(self):
+        self.mac.stop()
+        for m in self.padmacros.values(): m.stop()
+        if alive(self.mstate): self.mstate.config(text="متوقف", fg=BAD)
+        for n in list(self.prow):
+            if n in self.pstat: self.draw_pad_row(n)
+
+    def set_cps(self, n, s):
+        self.cfg["padcps"][n] = s; save_cfg(self.cfg)
+        try: over = float(s) > MAX_CPS
+        except ValueError: over = False
+        if alive(getattr(self, "speedmsg", None)):
+            self.speedmsg.config(text=("السرعة فوق الحد، بتتحدد على %d ضغطة/ث" % MAX_CPS) if over else "", fg=BAD)
 
     def report_callback_exception(self, exc, val, tb):
         traceback.print_exception(exc, val, tb, file=LOG)
