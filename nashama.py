@@ -185,15 +185,39 @@ def tname(s):
     return (t if isinstance(t, str) else t.name).upper()
 
 
+def split_steps(s):
+    return [p.strip() for p in (s or "").replace("،", ",").replace("+", ",").split(",") if p.strip()]
+
+
+def wait_ms(s):
+    p = s.strip().lower().replace("انتظر", "wait")
+    if p.startswith("wait"):
+        try: return float(p[4:].strip() or 0)
+        except ValueError: return 0.0
+    return None
+
+
+def valid_action(s):
+    return any(wait_ms(x) is not None or parse_target(x) is not None for x in split_steps(s))
+
+
+def pause(sec):
+    end = time.perf_counter() + sec
+    while True:
+        left = end - time.perf_counter()
+        if left <= 0: break
+        if left > 0.002: time.sleep(left - 0.001)
+
+
 class Macro:
     """Repeats a key / mouse click. Above 50/s it sends batches with SendInput (up to MAX_CPS per second)"""
     def __init__(self):
         self.on, self.target, self.cps, self.gen = False, "f5", 10.0, 0
-        self.sent, self.err, self.cap, self.tn = 0, 0, MAX_CPS, None
+        self.sent, self.err, self.cap, self.tn = 0, 0, MAX_CPS, set()
 
     def start(self):
         if not self.on:
-            self.on = True; self.gen += 1; self.err = 0; self.tn = tname(self.target)
+            self.on = True; self.gen += 1; self.err = 0; self.tn = {x for x in (tname(s) for s in split_steps(self.target)) if x}
             threading.Thread(target=self._run, args=(self.gen,), daemon=True).start()
 
     def stop(self):
@@ -207,7 +231,10 @@ class Macro:
 
     def _run(self, g):
         try:
-            t = parse_target(self.target)
+            steps = split_steps(self.target)
+            if len(steps) > 1 or (steps and wait_ms(steps[0]) is not None):
+                self._seq(steps, g); return
+            t = parse_target(steps[0] if steps else self.target)
             if t is None:
                 self.on = False; return
             spec = fast_spec(t)
@@ -218,6 +245,67 @@ class Macro:
                 self._slow(t, g)
         except Exception:
             traceback.print_exc(file=LOG); self.on = False
+
+    def _build(self, steps):
+        items = []
+        for s in steps:
+            w = wait_ms(s)
+            if w is not None:
+                items.append(("w", w, None)); continue
+            t = parse_target(s)
+            if t is not None:
+                items.append(("a", t, fast_spec(t)))
+        return items
+
+    def _cycle(self, items, g=None):
+        for kind, a, spec in items:
+            if g is not None and not self._alive(g): return
+            if kind == "w":
+                pause(a / 1000.0)
+            elif spec:
+                arr = (INPUT * 2)(*make_pair(spec)); ctypes.windll.user32.SendInput(2, arr, ctypes.sizeof(INPUT))
+            elif isinstance(a, ms.Button):
+                msc.click(a)
+            else:
+                kbc.press(a); kbc.release(a)
+
+    def fire_once(self):
+        items = self._build(split_steps(self.target))
+        threading.Thread(target=self._cycle, args=(items,), daemon=True).start()
+
+    def _seq(self, steps, g):
+        """Run several steps in order, e.g.  g, left click, wait 5"""
+        items = self._build(steps)
+        if not items:
+            self.on = False; return
+        allfast = all(k == "w" or sp for k, a, sp in items)
+        nowait = all(k != "w" for k, a, sp in items)
+        hasm = any(k == "a" and sp and sp[0] == "m" for k, a, sp in items)
+        self.cap = MAX_CPS if (allfast and hasm) else (2000 if allfast else 500)
+        if allfast and nowait and self._cps() > 20 and os.name == "nt":
+            w = ctypes.windll; hk = FAST_HOOK["cb"]
+            events = [e for k, a, sp in items for e in make_pair(sp)]
+            n, sz = len(events), ctypes.sizeof(INPUT)
+            w.winmm.timeBeginPeriod(1)
+            if hk and hasm: hk("m", True)
+            try:
+                acc, last = 0.0, time.perf_counter()
+                while self._alive(g):
+                    now = time.perf_counter(); acc += self._cps() * (now - last); last = now
+                    k = int(acc); acc -= k; k = min(k, max(1, 4000 // n))
+                    if k:
+                        arr = (INPUT * (n * k))(*(events * k))
+                        r = w.user32.SendInput(n * k, arr, sz)
+                        if r: self.sent += r // n
+                        else: self.err = w.kernel32.GetLastError()
+                    time.sleep(0.001)
+            finally:
+                w.winmm.timeEndPeriod(1)
+                if hk and hasm: hk("m", False)
+        else:
+            while self._alive(g):
+                t0 = time.perf_counter(); self._cycle(items, g); self.sent += 1
+                time.sleep(max(0.0, 1 / self._cps() - (time.perf_counter() - t0)))
 
     def _slow(self, t, g):
         while self._alive(g):
@@ -641,6 +729,7 @@ class App(tk.Tk):
         self.lbl(r2, "2) الإجراء:").pack(side="left")
         tk.Label(r2, textvariable=self.q_act, bg=BG, fg=self.cfg["accent"], font=("Segoe UI", 11, "bold"), width=9).pack(side="left")
         RBtn(r2, text="اضغط زر / كليك", command=lambda: self.start_learn("QUICK"), h=28, fs=9).pack(side="left")
+        RBtn(r2, text="+ خطوة", command=lambda: self.start_learn("QUICK", True), h=28, fs=9).pack(side="left", padx=4)
         r3 = tk.Frame(qf, bg=BG); r3.pack(fill="x", pady=3)
         self.lbl(r3, "3) النمط:").pack(side="left")
         ttk.Combobox(r3, textvariable=self.q_mode, values=MODES, state="readonly", width=24).pack(side="left", padx=4)
@@ -701,11 +790,17 @@ class App(tk.Tk):
             st["up"] = ts
         if alive(self.pv): self.pv.lit(name, down)
         self.draw_pad_row(name)
-        tgt = self.cfg["padmap"].get(name); t = parse_target(tgt)
-        if t is None: return
+        tgt = self.cfg["padmap"].get(name)
+        if not valid_action(tgt): return
+        steps = split_steps(tgt)
         mode = self.cfg["padmode"].get(name, MODES[0])
         if mode == MODES[0]:
-            press(t, down); return
+            if len(steps) > 1:
+                if down:
+                    one = Macro(); one.target = tgt; one.fire_once()
+            else:
+                press(parse_target(steps[0]), down)
+            return
         m = self.padmacros.setdefault(name, Macro()); m.target = tgt
         try: m.cps = float(self.cfg["padcps"].get(name, 15))
         except ValueError: m.cps = 15
@@ -754,7 +849,7 @@ class App(tk.Tk):
     def b_mac(self, w):
         c = tk.LabelFrame(w, text="ماكرو الكيبورد / الماوس", bg=BG, fg=self.cfg["accent"], font=("Segoe UI", 11, "bold"), padx=10, pady=8)
         c.pack(fill="x", padx=12, pady=12)
-        for i, (l, v) in enumerate((("الزر المكرر (f5 / a / كليك يسار)", self.m_t), ("ضغطة بالثانية", self.m_c), ("زر التشغيل / الإيقاف", self.m_h))):
+        for i, (l, v) in enumerate((("الزر أو التسلسل (a / g, كليك يسار / wait 5)", self.m_t), ("ضغطة بالثانية", self.m_c), ("زر التشغيل / الإيقاف", self.m_h))):
             self.lbl(c, l).grid(row=i, column=0, sticky="w", padx=6, pady=4)
             ttk.Entry(c, textvariable=v, width=14).grid(row=i, column=1, pady=4)
         self.mstate = self.lbl(c, "متوقف", fg=BAD, font=("Segoe UI", 12, "bold")); self.mstate.grid(row=3, column=0, columnspan=2, pady=4)
@@ -932,7 +1027,7 @@ class App(tk.Tk):
 
     def blocked(self, n):
         for m in [self.mac, *self.padmacros.values()]:
-            if m.on and m.tn == n:
+            if m.on and n in m.tn:
                 return True
         return False
 
@@ -993,7 +1088,8 @@ class App(tk.Tk):
         if alive(getattr(self, "speedmsg", None)):
             self.speedmsg.config(text=msg, fg=OK)
 
-    def start_learn(self, n):
+    def start_learn(self, n, append=False):
+        self.learn_append = append
         self.learn_row, self.learn_t = n, time.perf_counter()
         if alive(getattr(self, "speedmsg", None)):
             self.speedmsg.config(text="اضغط الحين الزر أو الكليك اللي تبيه (Esc للإلغاء)", fg=self.cfg["accent"])
@@ -1009,7 +1105,11 @@ class App(tk.Tk):
             if tgt is None or parse_target(tgt) is None:
                 msg = "هذا الزر مو مدعوم، جرّب زر ثاني"
             else:
-                if n in self.pvars: self.pvars[n].set(tgt)
+                if n in self.pvars:
+                    old = self.pvars[n].get()
+                    if getattr(self, "learn_append", False) and old not in ("", "—", "بدون"):
+                        tgt = old + ", " + tgt
+                    self.pvars[n].set(tgt)
                 msg = ("تم: الإجراء ← %s" % tgt) if n == "QUICK" else ("تم: زر اليد %s ← %s" % (n, tgt))
         if alive(getattr(self, "speedmsg", None)):
             self.speedmsg.config(text=msg, fg=OK)
